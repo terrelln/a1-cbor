@@ -12,9 +12,12 @@ typedef struct {
   void *(*calloc)(void *opaque, size_t bytes);
   /// Opaque pointer passed to alloc and calloc.
   void *opaque;
-  size_t allocatedBytes;
-  size_t limitBytes;
 } A1C_Arena;
+
+/// Wraps @p arena and limits the total allocated bytes to @p limitBytes
+A1C_Arena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes);
+/// Resets the allocated bytes to 0.
+void A1C_LimitedArena_reset(A1C_Arena *arena);
 
 typedef enum {
   A1C_ItemType_invalid = 0,
@@ -40,12 +43,12 @@ typedef double A1C_Float64;
 typedef float A1C_Float32;
 
 typedef struct {
-  uint8_t *data;
+  const uint8_t *data;
   size_t size;
 } A1C_Bytes;
 
 typedef struct {
-  char *data;
+  const char *data;
   size_t size;
 } A1C_String;
 
@@ -95,12 +98,15 @@ typedef enum {
   A1C_ErrorType_invalidSimpleEncoding,
   A1C_ErrorType_halfPrecisionUnsupported,
   A1C_ErrorType_breakNotAllowed,
+  A1C_ErrorType_writeFailed,
+  A1C_ErrorType_invalidItemType,
+  A1C_ErrorType_invalidSimpleValue,
 } A1C_ErrorType;
 
 typedef struct {
   A1C_ErrorType type;
   size_t srcPos;
-  const A1C_Item* item;
+  const A1C_Item *item;
 } A1C_Error;
 
 ////////////////////////////////////////
@@ -111,14 +117,15 @@ typedef struct {
 
 typedef struct {
   A1C_Arena arena;
+
   A1C_Error error;
-  const uint8_t* start;
-  A1C_Item* parent;
+  const uint8_t *start;
+  A1C_Item *parent;
   size_t depth;
   size_t maxDepth;
 } A1C_Decoder;
 
-void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena);
+void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena, size_t limitBytes);
 
 A1C_Item *A1C_Decoder_decode(A1C_Decoder *decoder, const uint8_t *data,
                              size_t size);
@@ -150,11 +157,9 @@ void A1C_Item_null(A1C_Item *item);
 void A1C_Item_undefined(A1C_Item *item);
 void A1C_Item_simple(A1C_Item *item, A1C_Simple value);
 A1C_Tag *A1C_Item_tag(A1C_Item *item, A1C_UInt64 tag, A1C_Arena *arena);
-A1C_Bytes *A1C_Item_bytes(A1C_Item *item, size_t size, A1C_Arena *arena);
-A1C_Bytes * A1C_Item_bytes_copy(A1C_Item *item, const uint8_t *data, size_t size, A1C_Arena * arena);
+uint8_t *A1C_Item_bytes(A1C_Item *item, size_t size, A1C_Arena *arena);
 void A1C_Item_bytes_ref(A1C_Item *item, uint8_t *data, size_t size);
-A1C_String *A1C_Item_string(A1C_Item *item, size_t size, A1C_Arena *arena);
-A1C_String *A1C_Item_string_copy(A1C_Item *item, const char* data, size_t size, A1C_Arena *arena);
+char *A1C_Item_string(A1C_Item *item, size_t size, A1C_Arena *arena);
 void A1C_Item_string_ref(A1C_Item *item, char *data, size_t size);
 A1C_Map *A1C_Item_map(A1C_Item *item, size_t size, A1C_Arena *arena);
 A1C_Array *A1C_Item_array(A1C_Item *item, size_t size, A1C_Arena *arena);
@@ -166,14 +171,12 @@ A1C_Array *A1C_Item_array(A1C_Item *item, size_t size, A1C_Arena *arena);
 typedef size_t (*A1C_Encoder_WriteCallback)(void *opaque, const uint8_t *data,
                                             size_t size);
 
-typedef void (*A1C_Encode_Base64Encode)(uint8_t *dst, const uint8_t *src,
-                                        size_t size);
-
 typedef struct {
   A1C_Error error;
+  uint64_t bytesWritten;
+  const A1C_Item *currentItem;
   A1C_Encoder_WriteCallback write;
   void *opaque;
-  A1C_Encode_Base64Encode base64Encode;
 } A1C_Encoder;
 
 void A1C_Encoder_init(A1C_Encoder *encoder, A1C_Encoder_WriteCallback write,
@@ -187,9 +190,8 @@ bool A1C_Encoder_json(A1C_Encoder *encoder, const A1C_Item *item);
 // Simple Encoder
 ////////////////////////////////////////
 
-size_t A1C_Item_maxSize(const A1C_Item *item);
-size_t A1C_Item_encode(const A1C_Item *item, uint8_t *buffer, size_t size,
+size_t A1C_Item_encodedSize(const A1C_Item *item);
+size_t A1C_Item_encode(const A1C_Item *item, uint8_t *dst, size_t dstCapacity,
                        A1C_Error *error);
-
 
 #endif

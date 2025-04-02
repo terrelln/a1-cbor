@@ -10,12 +10,13 @@
 ////////////////////////////////////////
 
 static const uint64_t A1C_kNoOpTag = 55799;
+static const char *A1C_kEmptyString = "";
 
 ////////////////////////////////////////
 // Utilities
 ////////////////////////////////////////
 
-#ifndef __has_builtin
+#if defined(A1C_TEST_FALLBACK) || !defined(__has_builtin)
 #define __has_builtin(x) 0
 #endif
 
@@ -52,20 +53,6 @@ static bool A1C_overflowMul(size_t x, size_t y, size_t *result) {
 #else
   return A1C_overflowMul_fallback(x, y, result);
 #endif
-}
-
-static void *A1C_Arena_calloc(A1C_Arena *arena, size_t count, size_t size) {
-  size_t bytes;
-  if (A1C_overflowMul(count, size, &bytes)) {
-    return NULL;
-  }
-  if (A1C_overflowAdd(arena->allocatedBytes, bytes, &arena->allocatedBytes)) {
-    return NULL;
-  }
-  if (arena->limitBytes > 0 && arena->allocatedBytes > arena->limitBytes) {
-    return NULL;
-  }
-  return arena->calloc(arena->opaque, bytes);
 }
 
 static void A1C_byteswap_fallback(void *value, size_t size) {
@@ -121,6 +108,75 @@ static void A1C_byteswap(void *value, size_t size) {
 }
 
 ////////////////////////////////////////
+// Arena
+////////////////////////////////////////
+
+static void *A1C_Arena_calloc(A1C_Arena *arena, size_t count, size_t size) {
+  size_t bytes;
+  if (A1C_overflowMul(count, size, &bytes)) {
+    return NULL;
+  }
+  if (bytes == 0) {
+    return (void *)A1C_kEmptyString;
+  }
+  return arena->calloc(arena->opaque, bytes);
+}
+
+typedef struct {
+  A1C_Arena backingArena;
+  size_t allocatedBytes;
+  size_t limitBytes;
+} A1C_LimitedArena;
+
+static void *A1C_LimitedArena_calloc(void *opaque, size_t bytes) {
+  A1C_LimitedArena *arena = (A1C_LimitedArena *)opaque;
+  if (arena == NULL) {
+    return NULL;
+  }
+  assert(arena->limitBytes != 0);
+  assert(arena->allocatedBytes <= arena->limitBytes);
+
+  size_t newBytes;
+  if (A1C_overflowAdd(arena->allocatedBytes, bytes, &newBytes)) {
+    return NULL;
+  }
+  if (newBytes > arena->limitBytes) {
+    return NULL;
+  }
+  void *result = arena->backingArena.calloc(arena->backingArena.opaque, bytes);
+  if (result != NULL) {
+    arena->allocatedBytes = newBytes;
+  }
+  return result;
+}
+
+A1C_Arena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes) {
+  if (limitBytes == 0) {
+    return arena;
+  }
+  A1C_LimitedArena *limitedArena =
+      A1C_Arena_calloc(&arena, 1, sizeof(A1C_LimitedArena));
+  if (limitedArena != NULL) {
+    limitedArena->backingArena = arena;
+    limitedArena->allocatedBytes = 0;
+    limitedArena->limitBytes = limitBytes;
+  }
+  arena.calloc = A1C_LimitedArena_calloc;
+  arena.opaque = limitedArena;
+
+  return arena;
+}
+
+void A1C_LimitedArena_reset(A1C_Arena *arena) {
+  A1C_LimitedArena *limitedArena = (A1C_LimitedArena *)arena->opaque;
+  if (limitedArena != NULL) {
+    assert(limitedArena->limitBytes != 0);
+    assert(limitedArena->allocatedBytes <= limitedArena->limitBytes);
+    limitedArena->allocatedBytes = 0;
+  }
+}
+
+////////////////////////////////////////
 // Item Helpers
 ////////////////////////////////////////
 
@@ -138,6 +194,20 @@ static bool A1C_Item_arrayEq(const A1C_Item *a, size_t aSize, const A1C_Item *b,
 }
 
 bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b) {
+  // Special case integers: They allow equality across types.
+  if (a->type == A1C_ItemType_int64 && b->type == A1C_ItemType_uint64) {
+    if (a->int64 < 0) {
+      return false;
+    }
+    return (uint64_t)a->int64 == b->uint64;
+  }
+  if (a->type == A1C_ItemType_uint64 && b->type == A1C_ItemType_int64) {
+    if (b->int64 < 0) {
+      return false;
+    }
+    return a->uint64 == (uint64_t)b->int64;
+  }
+
   if (a->type != b->type) {
     return false;
   }
@@ -262,24 +332,15 @@ A1C_Tag *A1C_Item_tag(A1C_Item *item, A1C_UInt64 tag, A1C_Arena *arena) {
   return &item->tag;
 }
 
-A1C_Bytes *A1C_Item_bytes(A1C_Item *item, size_t size, A1C_Arena *arena) {
+uint8_t *A1C_Item_bytes(A1C_Item *item, size_t size, A1C_Arena *arena) {
   uint8_t *data = A1C_Arena_calloc(arena, size, 1);
-  if (data == NULL && size > 0) {
+  if (data == NULL) {
     return NULL;
   }
 
   A1C_Item_bytes_ref(item, data, size);
 
-  return &item->bytes;
-}
-
-A1C_Bytes *A1C_Item_bytes_copy(A1C_Item *item, const uint8_t *data, size_t size,
-                               A1C_Arena *arena) {
-  A1C_Bytes *bytes = A1C_Item_bytes(item, size, arena);
-  if (bytes != NULL && size > 0) {
-    memcpy(bytes->data, data, size);
-  }
-  return bytes;
+  return data;
 }
 
 void A1C_Item_bytes_ref(A1C_Item *item, uint8_t *data, size_t size) {
@@ -288,24 +349,15 @@ void A1C_Item_bytes_ref(A1C_Item *item, uint8_t *data, size_t size) {
   item->bytes.size = size;
 }
 
-A1C_String *A1C_Item_string(A1C_Item *item, size_t size, A1C_Arena *arena) {
+char *A1C_Item_string(A1C_Item *item, size_t size, A1C_Arena *arena) {
   char *data = A1C_Arena_calloc(arena, size, 1);
-  if (data == NULL && size > 0) {
+  if (data == NULL) {
     return NULL;
   }
 
   A1C_Item_string_ref(item, data, size);
 
-  return &item->string;
-}
-
-A1C_String *A1C_Item_string_copy(A1C_Item *item, const char *data, size_t size,
-                                 A1C_Arena *arena) {
-  A1C_String *string = A1C_Item_string(item, size, arena);
-  if (string != NULL && size > 0) {
-    memcpy(string->data, data, size);
-  }
-  return string;
+  return data;
 }
 
 void A1C_Item_string_ref(A1C_Item *item, char *data, size_t size) {
@@ -316,7 +368,7 @@ void A1C_Item_string_ref(A1C_Item *item, char *data, size_t size) {
 
 A1C_Map *A1C_Item_map(A1C_Item *item, size_t size, A1C_Arena *arena) {
   A1C_Item *items = A1C_Arena_calloc(arena, size, 2 * sizeof(A1C_Item));
-  if (items == NULL && size > 0) {
+  if (items == NULL) {
     return NULL;
   }
 
@@ -330,7 +382,7 @@ A1C_Map *A1C_Item_map(A1C_Item *item, size_t size, A1C_Arena *arena) {
 
 A1C_Array *A1C_Item_array(A1C_Item *item, size_t size, A1C_Arena *arena) {
   A1C_Item *items = A1C_Arena_calloc(arena, size, sizeof(A1C_Item));
-  if (items == NULL && size > 0) {
+  if (items == NULL) {
     return NULL;
   }
 
@@ -400,10 +452,11 @@ bool A1C_ItemHeader_isLegal(A1C_ItemHeader header) {
 // Decoder
 ////////////////////////////////////////
 
-void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena) {
+void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena,
+                      size_t limitBytes) {
   memset(decoder, 0, sizeof(A1C_Decoder));
   assert(arena.calloc != NULL);
-  decoder->arena = arena;
+  decoder->arena = A1C_LimitedArena_init(arena, limitBytes);
 }
 
 static void A1C_Decoder_reset(A1C_Decoder *decoder, const uint8_t *start) {
@@ -414,7 +467,7 @@ static void A1C_Decoder_reset(A1C_Decoder *decoder, const uint8_t *start) {
   if (decoder->maxDepth == 0) {
     decoder->maxDepth = A1C_MAX_DEPTH_DEFAULT;
   }
-  decoder->arena.allocatedBytes = 0;
+  A1C_LimitedArena_reset(&decoder->arena);
 }
 
 static A1C_Item *A1C_Decoder_decodeOne(A1C_Decoder *decoder, const uint8_t *ptr,
@@ -555,14 +608,14 @@ static A1C_Item *A1C_Decoder_decodeData(A1C_Decoder *decoder,
       previous = child;
     }
     data = A1C_Arena_calloc(&decoder->arena, totalSize, 1);
-    if (data == NULL && totalSize > 0) {
+    if (data == NULL) {
       A1C_Decoder_error(A1C_ErrorType_badAlloc);
     }
     uint8_t *dataEnd = data + totalSize;
     while (previous != NULL) {
       const uint8_t *chunkPtr = majorType == A1C_MajorType_bytes
                                     ? previous->bytes.data
-                                    : (uint8_t *)previous->string.data;
+                                    : (const uint8_t *)previous->string.data;
       const size_t chunkSize = majorType == A1C_MajorType_bytes
                                    ? previous->bytes.size
                                    : previous->string.size;
@@ -576,7 +629,7 @@ static A1C_Item *A1C_Decoder_decodeData(A1C_Decoder *decoder,
     assert(dataEnd == data);
   } else {
     data = A1C_Arena_calloc(&decoder->arena, singleSize, 1);
-    if (data == NULL && singleSize > 0) {
+    if (data == NULL) {
       A1C_Decoder_error(A1C_ErrorType_badAlloc);
     }
     A1C_Decoder_read(data, singleSize);
@@ -829,4 +882,303 @@ A1C_Item *A1C_Decoder_decode(A1C_Decoder *decoder, const uint8_t *data,
     return NULL;
   }
   return A1C_Decoder_decodeOne(decoder, data, data + size);
+}
+
+////////////////////////////////////////
+// Encoder
+////////////////////////////////////////
+
+void A1C_Encoder_init(A1C_Encoder *encoder, A1C_Encoder_WriteCallback write,
+                      void *opaque) {
+  memset(encoder, 0, sizeof(*encoder));
+  encoder->write = write;
+  encoder->opaque = opaque;
+}
+
+static void A1C_Encoder_reset(A1C_Encoder *encoder) {
+  memset(&encoder->error, 0, sizeof(A1C_Error));
+  encoder->bytesWritten = 0;
+}
+
+bool A1C_Encoder_encodeOne(A1C_Encoder *encoder, const A1C_Item *item);
+
+#define A1C_Encoder_error(errorType)                                           \
+  do {                                                                         \
+    encoder->error.type = (errorType);                                         \
+    encoder->error.srcPos = encoder->bytesWritten;                             \
+    encoder->error.item = encoder->currentItem;                                \
+    return false;                                                              \
+  } while (0)
+
+static bool A1C_Encoder_write(A1C_Encoder *encoder, const void *data,
+                              size_t size) {
+  if (size == 0) {
+    return true;
+  }
+  const size_t written = encoder->write(encoder->opaque, data, size);
+  encoder->bytesWritten += written;
+
+  if (written < size) {
+    A1C_Encoder_error(A1C_ErrorType_writeFailed);
+  }
+  return true;
+}
+
+bool A1C_Encoder_writeInt(A1C_Encoder *encoder, const void *data, size_t size) {
+  uint64_t val = 0;
+  memcpy(&val, data, size);
+  A1C_byteswap(&val, size);
+  return A1C_Encoder_write(encoder, data, size);
+}
+
+static bool A1C_Encoder_encodeHeaderAndCount(A1C_Encoder *encoder,
+                                             A1C_MajorType majorType,
+                                             uint64_t count) {
+  assert(majorType != A1C_MajorType_special);
+  uint8_t shortCount;
+  if (count < 24) {
+    shortCount = (uint8_t)count;
+  } else if (count <= UINT8_MAX) {
+    shortCount = 24;
+  } else if (count <= UINT16_MAX) {
+    shortCount = 25;
+  } else if (count <= UINT32_MAX) {
+    shortCount = 26;
+  } else {
+    shortCount = 27;
+  }
+  A1C_ItemHeader header = A1C_ItemHeader_make(majorType, shortCount);
+  if (!A1C_Encoder_write(encoder, &header, sizeof(header))) {
+    return false;
+  }
+  if (shortCount == 24) {
+    if (!A1C_Encoder_writeInt(encoder, &count, 1)) {
+      return false;
+    }
+  } else if (shortCount == 25) {
+    if (!A1C_Encoder_writeInt(encoder, &count, 2)) {
+      return false;
+    }
+  } else if (shortCount == 26) {
+    if (!A1C_Encoder_writeInt(encoder, &count, 4)) {
+      return false;
+    }
+  } else if (shortCount == 27) {
+    if (!A1C_Encoder_writeInt(encoder, &count, 8)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool A1C_Encoder_encodeInt(A1C_Encoder *encoder, const A1C_Item *item) {
+  assert(item->type == A1C_ItemType_uint64 || item->type == A1C_ItemType_int64);
+  A1C_MajorType majorType;
+  uint64_t value;
+  if (item->type == A1C_ItemType_uint64 || item->int64 >= 0) {
+    majorType = A1C_MajorType_uint;
+    value = item->uint64;
+  } else {
+    majorType = A1C_MajorType_int;
+    value = (uint64_t)-item->int64;
+  }
+  return A1C_Encoder_encodeHeaderAndCount(encoder, majorType, value);
+}
+
+static bool A1C_Encoder_encodeData(A1C_Encoder *encoder, const A1C_Item *item) {
+  assert(item->type == A1C_ItemType_bytes || item->type == A1C_ItemType_string);
+  const A1C_MajorType majorType = item->type == A1C_ItemType_bytes
+                                      ? A1C_MajorType_bytes
+                                      : A1C_MajorType_string;
+  const size_t count =
+      item->type == A1C_ItemType_bytes ? item->bytes.size : item->string.size;
+  if (!A1C_Encoder_encodeHeaderAndCount(encoder, majorType, count)) {
+    return false;
+  }
+  const void *data = item->type == A1C_ItemType_bytes
+                         ? (const void *)item->bytes.data
+                         : (const void *)item->string.data;
+  A1C_Encoder_write(encoder, data, count);
+  return true;
+}
+
+static bool A1C_Encoder_encodeArray(A1C_Encoder *encoder,
+                                    const A1C_Item *item) {
+  assert(item->type == A1C_ItemType_array);
+  const size_t count = item->array.size;
+  if (!A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_array, count)) {
+    return false;
+  }
+  for (size_t i = 0; i < count; i++) {
+    const A1C_Item *child = &item->array.items[i];
+    if (!A1C_Encoder_encodeOne(encoder, child)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool A1C_Encoder_encodeMap(A1C_Encoder *encoder, const A1C_Item *item) {
+  assert(item->type == A1C_ItemType_map);
+  const size_t count = item->map.size;
+  if (!A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_map, count)) {
+    return false;
+  }
+  for (size_t i = 0; i < count; i++) {
+    const A1C_Item *key = &item->map.keys[i];
+    const A1C_Item *value = &item->map.values[i];
+    if (!A1C_Encoder_encodeOne(encoder, key)) {
+      return false;
+    }
+    if (!A1C_Encoder_encodeOne(encoder, value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool A1C_Encoder_encodeTag(A1C_Encoder *encoder, const A1C_Item *item) {
+  assert(item->type == A1C_ItemType_tag);
+  const A1C_Tag *tag = &item->tag;
+  if (!A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_tag, tag->tag)) {
+    return false;
+  }
+  if (!A1C_Encoder_encodeOne(encoder, tag->item)) {
+    return false;
+  }
+  return true;
+}
+
+static bool A1C_Encoder_encodeSimple(A1C_Encoder *encoder, uint8_t value) {
+  if (value < 20) {
+    A1C_Encoder_error(A1C_ErrorType_invalidSimpleValue);
+  } else if (value < 24 || value >= 32) {
+    return A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special,
+                                            (uint64_t)value);
+  } else {
+    A1C_Encoder_error(A1C_ErrorType_invalidSimpleValue);
+  }
+}
+
+static bool A1C_Encoder_encodeSpecial(A1C_Encoder *encoder,
+                                      const A1C_Item *item) {
+  if (item->type == A1C_ItemType_false) {
+    return A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special, 20);
+  } else if (item->type == A1C_ItemType_true) {
+    return A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special, 21);
+  } else if (item->type == A1C_ItemType_null) {
+    return A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special, 22);
+  } else if (item->type == A1C_ItemType_undefined) {
+    return A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special, 23);
+  } else if (item->type == A1C_ItemType_simple) {
+    if (item->simple >= 20 && item->simple < 32) {
+      A1C_Encoder_error(A1C_ErrorType_invalidSimpleValue);
+    }
+    return A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special,
+                                            item->simple);
+  } else if (item->type == A1C_ItemType_float32) {
+    if (!A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special, 25)) {
+      return false;
+    }
+    return A1C_Encoder_writeInt(encoder, &item->float32, sizeof(item->float32));
+  } else if (item->type == A1C_ItemType_float64) {
+    if (!A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special, 26)) {
+      return false;
+    }
+    return A1C_Encoder_writeInt(encoder, &item->float64, sizeof(item->float64));
+  } else {
+    assert(false);
+    return false;
+  }
+}
+
+bool A1C_Encoder_encodeOne(A1C_Encoder *encoder, const A1C_Item *item) {
+  encoder->currentItem = item;
+  switch (item->type) {
+  case A1C_ItemType_uint64:
+  case A1C_ItemType_int64:
+    return A1C_Encoder_encodeInt(encoder, item);
+  case A1C_ItemType_bytes:
+  case A1C_ItemType_string:
+    return A1C_Encoder_encodeData(encoder, item);
+  case A1C_ItemType_array:
+    return A1C_Encoder_encodeArray(encoder, item);
+  case A1C_ItemType_map:
+    return A1C_Encoder_encodeMap(encoder, item);
+  case A1C_ItemType_tag:
+    return A1C_Encoder_encodeTag(encoder, item);
+  case A1C_ItemType_false:
+  case A1C_ItemType_true:
+  case A1C_ItemType_null:
+  case A1C_ItemType_undefined:
+  case A1C_ItemType_float32:
+  case A1C_ItemType_float64:
+  case A1C_ItemType_simple:
+    return A1C_Encoder_encodeSpecial(encoder, item);
+  case A1C_ItemType_invalid:
+    A1C_Encoder_error(A1C_ErrorType_invalidItemType);
+    break;
+  }
+}
+
+bool A1C_Encoder_encode(A1C_Encoder *encoder, const A1C_Item *item) {
+  A1C_Encoder_reset(encoder);
+  return A1C_Encoder_encodeOne(encoder, item);
+}
+
+////////////////////////////////////////
+// Simple Encoder
+////////////////////////////////////////
+
+static size_t A1C_noopWrite(void *opaque, const uint8_t *data, size_t size) {
+  (void)opaque;
+  (void)data;
+  return size;
+}
+
+size_t A1C_Item_encodedSize(const A1C_Item *item) {
+  A1C_Encoder encoder;
+  A1C_Encoder_init(&encoder, A1C_noopWrite, NULL);
+  if (!A1C_Encoder_encode(&encoder, item)) {
+    return 0;
+  }
+  return encoder.bytesWritten;
+}
+
+typedef struct {
+  uint8_t *ptr;
+  uint8_t *end;
+} A1C_Buffer;
+
+static size_t A1C_bufferWrite(void *opaque, const uint8_t *data, size_t size) {
+  A1C_Buffer *buffer = (A1C_Buffer *)opaque;
+  assert(buffer->ptr <= buffer->end);
+  const size_t capacity = (size_t)(buffer->end - buffer->ptr);
+  if (size > capacity) {
+    size = capacity;
+  }
+  if (size > 0) {
+    memcpy(buffer->ptr, data, size);
+    buffer->ptr += size;
+  }
+  return size;
+}
+
+size_t A1C_Item_encode(const A1C_Item *item, uint8_t *dst, size_t dstCapacity,
+                       A1C_Error *error) {
+  A1C_Buffer buf = {
+      .ptr = dst,
+      .end = dst + dstCapacity,
+  };
+  A1C_Encoder encoder;
+  A1C_Encoder_init(&encoder, A1C_bufferWrite, &buf);
+  bool success = A1C_Encoder_encode(&encoder, item);
+  assert(encoder.bytesWritten == (size_t)(buf.ptr - dst));
+  if (success) {
+    return encoder.bytesWritten;
+  }
+  if (error != NULL) {
+    *error = encoder.error;
+  }
+  return 0;
 }
