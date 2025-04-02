@@ -1,11 +1,36 @@
 cmake_minimum_required(VERSION 3.20)
+cmake_policy(SET CMP0135 NEW)
 
 separate_arguments(A1C_C_FLAGS NATIVE_COMMAND "${A1C_C_FLAGS}")
+option(STRICT "Enable strict compiler flags for C" ON)
 
 project(a1-cbor LANGUAGES C CXX)
 
 add_library(a1-cbor a1cbor.c)
-target_compile_definitions(a1-cbor PRIVATE ${A1C_C_FLAGS})
+if (${STRICT})
+    target_compile_options(
+        a1-cbor
+        PRIVATE
+            -g
+            -Wall
+            -Wextra
+            -pedantic
+            -Werror
+            -Wconversion
+            -Wcast-qual
+            -Wcast-align
+            -Wformat=2
+            -Wundef
+            -Wshadow
+            -Wvla
+            -Wpointer-arith
+            -Wstrict-aliasing=1
+            -Wfloat-equal
+            -Wunused-function
+            -Wswitch-enum
+    )
+endif()
+target_compile_options(a1-cbor PRIVATE ${A1C_C_FLAGS})
 set_property(TARGET a1-cbor PROPERTY C_STANDARD 11)
 
 # GoogleTest requires at least C++14
