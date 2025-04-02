@@ -52,6 +52,7 @@ protected:
     msg += "type=";
     msg += A1C_ErrorType_getString(error.type);
     msg += ", srcPos=" + std::to_string(error.srcPos);
+    msg += ", depth=" + std::to_string(error.depth);
     msg += ", file=";
     msg += error.file;
     msg += ", line=" + std::to_string(error.line);
@@ -72,6 +73,16 @@ protected:
                               string2.size(), nullptr),
               string2.size());
     EXPECT_EQ(str, string2);
+    return str;
+  }
+
+  std::string json(const A1C_Item *item) {
+    std::string str;
+    A1C_Encoder encoder;
+    A1C_Encoder_init(&encoder, appendToString, &str);
+    if (!A1C_Encoder_json(&encoder, item)) {
+      throw std::runtime_error{printError("JSON Encoding failed", encoder.error)};
+    }
     return str;
   }
 
@@ -639,4 +650,135 @@ TEST_F(A1CBorTest, Array) {
     array2 = array;
   }
   ASSERT_NE(*array1, *array2);
+}
+
+TEST_F(A1CBorTest, LargeArray) {
+  size_t size = 1000;
+  auto array = A1C_Item_root(&arena);
+  ASSERT_NE(array, nullptr);
+  auto a = A1C_Item_array(array, size, &arena);
+  ASSERT_NE(a, nullptr);
+
+  for (size_t i = 0; i < size; ++i) {
+    A1C_Item_uint64(a->items + i, i);
+  }
+
+  auto encoded = encode(array);
+  auto decoded = decode(encoded);
+  ASSERT_EQ(*array, *decoded);
+  ASSERT_EQ(decoded->parent, nullptr);
+
+  for (size_t i = 0; i < size; ++i) {
+    auto item = A1C_Array_get(&decoded->array, i);
+    ASSERT_NE(item, nullptr);
+    ASSERT_EQ(item->type, A1C_ItemType_uint64);
+    ASSERT_EQ(item->uint64, i);
+  }
+}
+
+TEST_F(A1CBorTest, DeeplyNested) {
+  size_t depth = A1C_MAX_DEPTH_DEFAULT;
+  auto item = A1C_Item_root(&arena);
+  ASSERT_NE(item, nullptr);
+
+  A1C_Item *current = item;
+  for (size_t i = 0; i < depth - 1; ++i) {
+    auto tag = A1C_Item_tag(current, i, &arena);
+    ASSERT_NE(tag, nullptr);
+    current = tag->item;
+  }
+  A1C_Item_null(current);
+
+  auto encoded = encode(item);
+  auto decoded = decode(encoded);
+  ASSERT_EQ(*item, *decoded);
+  ASSERT_EQ(decoded->parent, nullptr);
+
+  auto tag = A1C_Item_tag(current, 100, &arena);
+  ASSERT_NE(tag, nullptr);
+  A1C_Item_null(tag->item);
+
+  encoded = encode(item);
+
+  A1C_Decoder decoder;
+  A1C_Decoder_init(&decoder, arena, 0, false);
+  ASSERT_EQ(A1C_Decoder_decode(
+                &decoder, reinterpret_cast<const uint8_t *>(encoded.data()),
+                encoded.size()),
+            nullptr);
+  ASSERT_EQ(decoder.error.type, A1C_ErrorType_maxDepthExceeded);
+}
+
+static constexpr char kExpectedJSON[] = R"({
+  "key": "value",
+  42: [
+    -1,
+    -3.140000,
+    3.140000,
+    true,
+    false,
+    null,
+    undefined,
+    "aGVsbG8gd29ybGQxAA==",
+    "this is a longer string",
+    [
+    ],
+    {
+    },
+    {
+      "type": "tag",
+      "tag": 100,
+      "value": true
+    },
+    {
+      "type": "simple",
+      "value": 42
+    },
+    [
+      "",
+      "aA==",
+      "aGU=",
+      "aGVs",
+      "aGVsbA=="
+    ]
+  ]
+})";
+
+TEST_F(A1CBorTest, JSON) {
+  auto item = A1C_Item_root(&arena);
+  ASSERT_NE(item, nullptr);
+  auto map = A1C_Item_map(item, 2, &arena);
+  ASSERT_NE(map, nullptr);
+  A1C_Item_string_refCStr(map->keys + 0, "key");
+  A1C_Item_string_refCStr(map->values + 0, "value");
+  A1C_Item_uint64(map->keys + 1, 42);
+  auto array = A1C_Item_array(map->values + 1, 14, &arena);
+  ASSERT_NE(array, nullptr);
+  A1C_Item_int64(array->items + 0, -1);
+  A1C_Item_float32(array->items + 1, -3.14);
+  A1C_Item_float64(array->items + 2, 3.14);
+  A1C_Item_boolean(array->items + 3, true);
+  A1C_Item_boolean(array->items + 4, false);
+  A1C_Item_null(array->items + 5);
+  A1C_Item_undefined(array->items + 6);
+  uint8_t shortData[] = "hello world1";
+  A1C_Item_bytes_ref(array->items + 7, shortData, sizeof(shortData));
+  A1C_Item_string_refCStr(array->items + 8, "this is a longer string");
+  ASSERT_NE(A1C_Item_array(array->items + 9, 0, &arena), nullptr);
+  ASSERT_NE(A1C_Item_map(array->items + 10, 0, &arena), nullptr);
+  auto tag = A1C_Item_tag(array->items + 11, 100, &arena);
+  ASSERT_NE(tag, nullptr);
+  A1C_Item_boolean(tag->item, true);
+  array->items[12].type = A1C_ItemType_simple;
+  array->items[12].simple = 42;
+  array = A1C_Item_array(array->items + 13, 5, &arena);
+  ASSERT_NE(array, nullptr);
+  A1C_Item_bytes_ref(array->items + 0, shortData, 0);
+  A1C_Item_bytes_ref(array->items + 1, shortData, 1);
+  A1C_Item_bytes_ref(array->items + 2, shortData, 2);
+  A1C_Item_bytes_ref(array->items + 3, shortData, 3);
+  A1C_Item_bytes_ref(array->items + 4, shortData, 4);
+
+  auto encoded = json(item);
+  EXPECT_EQ(encoded, kExpectedJSON) << encoded;
 }

@@ -122,11 +122,13 @@ typedef enum {
   A1C_ErrorType_writeFailed,
   A1C_ErrorType_invalidItemType,
   A1C_ErrorType_invalidSimpleValue,
+  A1C_ErrorType_formatError,
 } A1C_ErrorType;
 
 typedef struct {
   A1C_ErrorType type;
   size_t srcPos;
+  size_t depth;
   const A1C_Item *item;
   const char *file;
   int line;
@@ -218,6 +220,7 @@ typedef struct {
   const A1C_Item *currentItem;
   A1C_Encoder_WriteCallback write;
   void *opaque;
+  size_t depth;
 } A1C_Encoder;
 
 void A1C_Encoder_init(A1C_Encoder *encoder, A1C_Encoder_WriteCallback write,

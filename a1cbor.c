@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 ////////////////////////////////////////
@@ -97,6 +98,49 @@ static uint64_t A1C_byteswap64(uint64_t value) {
 #endif
 }
 
+const char A1C_kBase64Map[] = {
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/'};
+
+size_t A1C_base64EncodedSize(size_t srcSize) {
+  size_t encodedSize = (srcSize / 3) * 4;
+  if (srcSize % 3 != 0) {
+    encodedSize += 4;
+  }
+  return encodedSize;
+}
+
+size_t A1C_base64Encode(char *dst, const uint8_t *src, size_t srcSize) {
+  const char *const dstBegin = dst;
+  const uint8_t *const srcEnd = src + srcSize;
+  for (; (srcEnd - src) >= 3; src += 3, dst += 4) {
+    dst[0] = A1C_kBase64Map[src[0] >> 2];
+    dst[1] = A1C_kBase64Map[((src[0] & 0x03) << 4) + ((src[1] >> 4))];
+    dst[2] = A1C_kBase64Map[((src[1] & 0x0f) << 2) + ((src[2] >> 6))];
+    dst[3] = A1C_kBase64Map[src[2] & 0x3f];
+  }
+
+  if (src < srcEnd) {
+    assert(src + 1 == srcEnd || src + 2 == srcEnd);
+    dst[0] = A1C_kBase64Map[src[0] >> 2];
+    if (src + 1 == srcEnd) {
+      dst[1] = A1C_kBase64Map[(src[0] & 0x03) << 4];
+      dst[2] = '=';
+    } else {
+      dst[1] = A1C_kBase64Map[((src[0] & 0x03) << 4) + (src[1] >> 4)];
+      dst[2] = A1C_kBase64Map[(src[1] & 0x0f) << 2];
+    }
+    dst[3] = '=';
+    dst += 4;
+  }
+  const size_t dstSize = (size_t)(dst - dstBegin);
+  assert(dstSize == A1C_base64EncodedSize(srcSize));
+  return dstSize;
+}
+
 ////////////////////////////////////////
 // Errors
 ////////////////////////////////////////
@@ -118,7 +162,6 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
   case A1C_ErrorType_maxDepthExceeded:
     return "maxDepthExceeded";
   case A1C_ErrorType_invalidSimpleEncoding:
-
     return "invalidSimpleEncoding";
   case A1C_ErrorType_halfPrecisionUnsupported:
     return "halfPrecisionUnsupported";
@@ -130,6 +173,8 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
     return "invalidItemType";
   case A1C_ErrorType_invalidSimpleValue:
     return "invalidSimpleValue";
+  case A1C_ErrorType_formatError:
+    return "formatError";
   }
 }
 
@@ -558,6 +603,7 @@ bool A1C_NODISCARD A1C_Decoder_errorImpl(A1C_Decoder *decoder,
   assert(decoder->ptr <= decoder->end);
   decoder->error.type = errorType;
   decoder->error.srcPos = (size_t)(decoder->ptr - decoder->start);
+  decoder->error.depth = decoder->depth;
   decoder->error.item = decoder->parent;
   decoder->error.file = file;
   decoder->error.line = line;
@@ -935,22 +981,32 @@ static bool A1C_NODISCARD A1C_Decoder_decodeOneInto(A1C_Decoder *decoder,
 
   switch (A1C_ItemHeader_majorType(header)) {
   case A1C_MajorType_uint:
-    return A1C_Decoder_decodeUInt(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeUInt(decoder, header, item));
+    break;
   case A1C_MajorType_int:
-    return A1C_Decoder_decodeInt(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeInt(decoder, header, item));
+    break;
   case A1C_MajorType_bytes:
-    return A1C_Decoder_decodeData(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeData(decoder, header, item));
+    break;
   case A1C_MajorType_string:
-    return A1C_Decoder_decodeData(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeData(decoder, header, item));
+    break;
   case A1C_MajorType_array:
-    return A1C_Decoder_decodeArray(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeArray(decoder, header, item));
+    break;
   case A1C_MajorType_map:
-    return A1C_Decoder_decodeMap(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeMap(decoder, header, item));
+    break;
   case A1C_MajorType_tag:
-    return A1C_Decoder_decodeTag(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeTag(decoder, header, item));
+    break;
   case A1C_MajorType_special:
-    return A1C_Decoder_decodeSpecial(decoder, header, item);
+    A1C_RET_IF_ERR(A1C_Decoder_decodeSpecial(decoder, header, item));
+    break;
   }
+  --decoder->depth;
+  return true;
 }
 
 A1C_Item *A1C_Decoder_decode(A1C_Decoder *decoder, const uint8_t *data,
@@ -978,6 +1034,7 @@ void A1C_Encoder_init(A1C_Encoder *encoder, A1C_Encoder_WriteCallback write,
 static void A1C_Encoder_reset(A1C_Encoder *encoder) {
   memset(&encoder->error, 0, sizeof(A1C_Error));
   encoder->bytesWritten = 0;
+  encoder->depth = 0;
 }
 
 bool A1C_Encoder_encodeOne(A1C_Encoder *encoder, const A1C_Item *item);
@@ -987,6 +1044,7 @@ bool A1C_NODISCARD A1C_Encoder_errorImpl(A1C_Encoder *encoder,
                                          const char *file, int line) {
   encoder->error.type = errorType;
   encoder->error.srcPos = encoder->bytesWritten;
+  encoder->error.depth = encoder->depth;
   encoder->error.item = encoder->currentItem;
   encoder->error.file = file;
   encoder->error.line = line;
@@ -1008,6 +1066,15 @@ static bool A1C_NODISCARD A1C_Encoder_write(A1C_Encoder *encoder,
     return A1C_Encoder_error(encoder, A1C_ErrorType_writeFailed);
   }
   return true;
+}
+
+static bool A1C_NODISCARD A1C_Encoder_writeCStr(A1C_Encoder *encoder,
+                                                const char *cstr) {
+  return A1C_Encoder_write(encoder, cstr, strlen(cstr));
+}
+
+static bool A1C_NODISCARD A1C_Encoder_putc(A1C_Encoder *encoder, char c) {
+  return A1C_Encoder_write(encoder, &c, 1);
 }
 
 static bool A1C_NODISCARD A1C_Encoder_encodeHeaderAndCount(
@@ -1160,36 +1227,236 @@ static bool A1C_NODISCARD A1C_Encoder_encodeSpecial(A1C_Encoder *encoder,
 }
 
 bool A1C_Encoder_encodeOne(A1C_Encoder *encoder, const A1C_Item *item) {
+  ++encoder->depth;
   encoder->currentItem = item;
   switch (item->type) {
   case A1C_ItemType_uint64:
   case A1C_ItemType_int64:
-    return A1C_Encoder_encodeInt(encoder, item);
+    A1C_RET_IF_ERR(A1C_Encoder_encodeInt(encoder, item));
+    break;
   case A1C_ItemType_bytes:
   case A1C_ItemType_string:
-    return A1C_Encoder_encodeData(encoder, item);
+    A1C_RET_IF_ERR(A1C_Encoder_encodeData(encoder, item));
+    break;
   case A1C_ItemType_array:
-    return A1C_Encoder_encodeArray(encoder, item);
+    A1C_RET_IF_ERR(A1C_Encoder_encodeArray(encoder, item));
+    break;
   case A1C_ItemType_map:
-    return A1C_Encoder_encodeMap(encoder, item);
+    A1C_RET_IF_ERR(A1C_Encoder_encodeMap(encoder, item));
+    break;
   case A1C_ItemType_tag:
-    return A1C_Encoder_encodeTag(encoder, item);
+    A1C_RET_IF_ERR(A1C_Encoder_encodeTag(encoder, item));
+    break;
   case A1C_ItemType_boolean:
   case A1C_ItemType_null:
   case A1C_ItemType_undefined:
   case A1C_ItemType_float32:
   case A1C_ItemType_float64:
   case A1C_ItemType_simple:
-    return A1C_Encoder_encodeSpecial(encoder, item);
+    A1C_RET_IF_ERR(A1C_Encoder_encodeSpecial(encoder, item));
+    break;
   case A1C_ItemType_invalid:
     return A1C_Encoder_error(encoder, A1C_ErrorType_invalidItemType);
-    break;
   }
+
+  --encoder->depth;
+  return true;
 }
 
 bool A1C_Encoder_encode(A1C_Encoder *encoder, const A1C_Item *item) {
   A1C_Encoder_reset(encoder);
   return A1C_Encoder_encodeOne(encoder, item);
+}
+
+static bool A1C_Encoder_jsonOne(A1C_Encoder *encoder, const A1C_Item *item);
+
+static bool A1C_Encoder_jsonIndent(A1C_Encoder *encoder) {
+  for (size_t i = 0; i < encoder->depth; ++i) {
+    A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "  "));
+  }
+  return true;
+}
+
+static bool A1C_NODISCARD A1C_Encoder_jsonNumeric(A1C_Encoder *encoder,
+                                                  const A1C_Item *item) {
+  char buffer[32];
+  int len;
+  if (item->type == A1C_ItemType_uint64) {
+    len = snprintf(buffer, sizeof(buffer), "%llu", item->uint64);
+  } else if (item->type == A1C_ItemType_int64) {
+    len = snprintf(buffer, sizeof(buffer), "%lld", item->int64);
+  } else if (item->type == A1C_ItemType_float32) {
+    len = snprintf(buffer, sizeof(buffer), "%f", item->float32);
+  } else {
+    assert(item->type == A1C_ItemType_float64);
+    len = snprintf(buffer, sizeof(buffer), "%f", item->float64);
+  }
+  if (len < 0 || (size_t)len >= sizeof(buffer)) {
+    return A1C_Encoder_error(encoder, A1C_ErrorType_formatError);
+  }
+  return A1C_Encoder_write(encoder, buffer, (size_t)len);
+}
+
+static bool A1C_NODISCARD A1C_Encoder_jsonBytes(A1C_Encoder *encoder,
+                                                const A1C_Item *item) {
+  A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '"'));
+  const uint8_t *data = item->bytes.data;
+  const uint8_t *end = data + item->bytes.size;
+  while (data < end) {
+    char buffer[256];
+    size_t toEncode = (size_t)(end - data);
+    if (toEncode > 192) {
+      toEncode = 192;
+    }
+    assert(A1C_base64EncodedSize(toEncode) <= sizeof(buffer));
+    const size_t base64Size = A1C_base64Encode(buffer, data, toEncode);
+    A1C_RET_IF_ERR(A1C_Encoder_write(encoder, buffer, base64Size));
+    data += toEncode;
+  }
+  assert(data == end);
+  A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '"'));
+  return true;
+}
+
+static bool A1C_NODISCARD A1C_Encoder_jsonString(A1C_Encoder *encoder,
+                                                 const A1C_Item *item) {
+  A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '"'));
+  A1C_RET_IF_ERR(
+      A1C_Encoder_write(encoder, item->string.data, item->string.size));
+  A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '"'));
+  return true;
+}
+
+static bool A1C_NODISCARD A1C_Encoder_jsonArray(A1C_Encoder *encoder,
+                                                const A1C_Item *item) {
+  A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "["));
+
+  ++encoder->depth;
+  for (size_t i = 0; i < item->array.size; ++i) {
+    if (i != 0) {
+      A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, ','));
+    }
+    A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '\n'));
+    A1C_RET_IF_ERR(A1C_Encoder_jsonIndent(encoder));
+    A1C_RET_IF_ERR(A1C_Encoder_jsonOne(encoder, &item->array.items[i]));
+  }
+  --encoder->depth;
+
+  A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '\n'));
+  A1C_RET_IF_ERR(A1C_Encoder_jsonIndent(encoder));
+  A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "]"));
+  return true;
+}
+
+static bool A1C_NODISCARD A1C_Encoder_jsonMap(A1C_Encoder *encoder,
+                                              const A1C_Item *item) {
+  A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "{"));
+
+  ++encoder->depth;
+  for (size_t i = 0; i < item->map.size; ++i) {
+    if (i != 0) {
+      A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, ','));
+    }
+    A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '\n'));
+    A1C_RET_IF_ERR(A1C_Encoder_jsonIndent(encoder));
+    A1C_RET_IF_ERR(A1C_Encoder_jsonOne(encoder, &item->map.keys[i]));
+    A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, ": "));
+    A1C_RET_IF_ERR(A1C_Encoder_jsonOne(encoder, &item->map.values[i]));
+  }
+  --encoder->depth;
+
+  A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '\n'));
+  A1C_RET_IF_ERR(A1C_Encoder_jsonIndent(encoder));
+  A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "}"));
+  return true;
+}
+
+static bool A1C_NODISCARD A1C_Encoder_jsonTag(A1C_Encoder *encoder,
+                                              const A1C_Item *item) {
+  A1C_Item children[6];
+  A1C_Item map;
+  map.type = A1C_ItemType_map;
+  map.map.keys = children + 0;
+  map.map.values = children + 3;
+  map.map.size = 3;
+
+  A1C_Item_string_refCStr(map.map.keys + 0, "type");
+  A1C_Item_string_refCStr(map.map.values + 0, "tag");
+  A1C_Item_string_refCStr(map.map.keys + 1, "tag");
+  A1C_Item_uint64(map.map.values + 1, item->tag.tag);
+  A1C_Item_string_refCStr(map.map.keys + 2, "value");
+  map.map.values[2] = *item->tag.item;
+
+  return A1C_Encoder_jsonMap(encoder, &map);
+}
+
+static bool A1C_NODISCARD A1C_Encoder_jsonSimple(A1C_Encoder *encoder,
+                                              const A1C_Item *item) {
+  A1C_Item children[4];
+  A1C_Item map;
+  map.type = A1C_ItemType_map;
+  map.map.keys = children + 0;
+  map.map.values = children + 2;
+  map.map.size = 2;
+
+  A1C_Item_string_refCStr(map.map.keys + 0, "type");
+  A1C_Item_string_refCStr(map.map.values + 0, "simple");
+  A1C_Item_string_refCStr(map.map.keys + 1, "value");
+  A1C_Item_uint64(map.map.values + 1, item->simple);
+
+  return A1C_Encoder_jsonMap(encoder, &map);
+}
+
+bool A1C_Encoder_jsonOne(A1C_Encoder *encoder, const A1C_Item *item) {
+  encoder->currentItem = item;
+  switch (item->type) {
+  case A1C_ItemType_uint64:
+  case A1C_ItemType_int64:
+  case A1C_ItemType_float32:
+  case A1C_ItemType_float64:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonNumeric(encoder, item));
+    break;
+  case A1C_ItemType_bytes:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonBytes(encoder, item));
+    break;
+  case A1C_ItemType_string:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonString(encoder, item));
+    break;
+  case A1C_ItemType_array:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonArray(encoder, item));
+    break;
+  case A1C_ItemType_map:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonMap(encoder, item));
+    break;
+  case A1C_ItemType_tag:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonTag(encoder, item));
+    break;
+  case A1C_ItemType_boolean:
+    if (item->boolean) {
+      A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "true"));
+    } else {
+      A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "false"));
+    }
+    break;
+  case A1C_ItemType_null:
+    A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "null"));
+    break;
+  case A1C_ItemType_undefined:
+    A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "undefined"));
+    break;
+  case A1C_ItemType_simple:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonSimple(encoder, item));
+    break;
+  case A1C_ItemType_invalid:
+    return A1C_Encoder_error(encoder, A1C_ErrorType_invalidItemType);
+  }
+
+  return true;
+}
+
+bool A1C_Encoder_json(A1C_Encoder *encoder, const A1C_Item *item) {
+  A1C_Encoder_reset(encoder);
+  return A1C_Encoder_jsonOne(encoder, item);
 }
 
 ////////////////////////////////////////
