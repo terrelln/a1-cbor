@@ -38,6 +38,14 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
+
+FetchContent_Declare(
+  json
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+  URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+)
+FetchContent_MakeAvailable(json)
+
 FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/6910c9d9165801d8827d628cb72eb7ea9dd538c5.zip
@@ -52,7 +60,54 @@ add_executable(
 target_link_libraries(
   a1-cbor-tests
   a1-cbor
+  nlohmann_json::nlohmann_json
   GTest::gtest_main
+)
+
+FetchContent_Declare(
+  libcbor
+  URL https://github.com/PJK/libcbor/archive/ae000f44e8d2a69e1f72a738f7c0b6b4b7cc4fbf.zip
+)
+FetchContent_MakeAvailable(libcbor)
+
+add_executable(
+    fuzz-decode
+    tests/fuzz_decode.cpp
+)
+target_link_libraries(
+    fuzz-decode
+    a1-cbor
+    libcbor::libcbor
+)
+target_compile_options(
+    fuzz-decode
+    PRIVATE
+      -fsanitize=fuzzer
+)
+target_link_options(
+    fuzz-decode
+    PRIVATE
+      -fsanitize=fuzzer
+)
+
+add_executable(
+    fuzz-json
+    tests/fuzz_json.cpp
+)
+target_link_libraries(
+    fuzz-json
+    a1-cbor
+    nlohmann_json::nlohmann_json
+)
+target_compile_options(
+    fuzz-json
+    PRIVATE
+      -fsanitize=fuzzer
+)
+target_link_options(
+    fuzz-json
+    PRIVATE
+      -fsanitize=fuzzer
 )
 
 include(GoogleTest)

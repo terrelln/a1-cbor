@@ -155,6 +155,8 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
     return "truncated";
   case A1C_ErrorType_invalidItemHeader:
     return "invalidItemHeader";
+  case A1C_ErrorType_largeNegativeIntegerUnsupported:
+    return "largeNegativeIntegerUnsupported";
   case A1C_ErrorType_integerOverflow:
     return "integerOverflow";
   case A1C_ErrorType_invalidChunkedString:
@@ -163,8 +165,6 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
     return "maxDepthExceeded";
   case A1C_ErrorType_invalidSimpleEncoding:
     return "invalidSimpleEncoding";
-  case A1C_ErrorType_halfPrecisionUnsupported:
-    return "halfPrecisionUnsupported";
   case A1C_ErrorType_breakNotAllowed:
     return "breakNotAllowed";
   case A1C_ErrorType_writeFailed:
@@ -175,6 +175,8 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
     return "invalidSimpleValue";
   case A1C_ErrorType_formatError:
     return "formatError";
+  case A1C_ErrorType_trailingData:
+    return "trailingData";
   }
 }
 
@@ -237,7 +239,8 @@ A1C_Arena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes) {
 void A1C_LimitedArena_reset(A1C_Arena *arena) {
   A1C_LimitedArena *limitedArena = (A1C_LimitedArena *)arena->opaque;
   if (limitedArena != NULL) {
-    assert(limitedArena->allocatedBytes <= limitedArena->limitBytes);
+    assert(limitedArena->limitBytes == 0 ||
+           limitedArena->allocatedBytes <= limitedArena->limitBytes);
     limitedArena->allocatedBytes = 0;
   }
 }
@@ -286,14 +289,16 @@ bool A1C_Item_strictEq(const A1C_Item *a, const A1C_Item *b) {
     return a->uint64 == b->uint64;
   case A1C_ItemType_int64:
     return a->int64 == b->int64;
-  case A1C_ItemType_float64: {
-    uint64_t aBits, bBits;
+  case A1C_ItemType_float16:
+    return a->float16 == b->float16;
+  case A1C_ItemType_float32: {
+    uint32_t aBits, bBits;
     memcpy(&aBits, &a->float64, sizeof(aBits));
     memcpy(&bBits, &b->float64, sizeof(bBits));
     return aBits == bBits;
   }
-  case A1C_ItemType_float32: {
-    uint32_t aBits, bBits;
+  case A1C_ItemType_float64: {
+    uint64_t aBits, bBits;
     memcpy(&aBits, &a->float64, sizeof(aBits));
     memcpy(&bBits, &b->float64, sizeof(bBits));
     return aBits == bBits;
@@ -371,14 +376,19 @@ void A1C_Item_int64(A1C_Item *item, A1C_Int64 value) {
   item->int64 = value;
 }
 
-void A1C_Item_float64(A1C_Item *item, A1C_Float64 value) {
-  item->type = A1C_ItemType_float64;
-  item->float64 = value;
+void A1C_Item_float16(A1C_Item *item, A1C_Float16 value) {
+  item->type = A1C_ItemType_float16;
+  item->float16 = value;
 }
 
 void A1C_Item_float32(A1C_Item *item, A1C_Float32 value) {
   item->type = A1C_ItemType_float32;
   item->float32 = value;
+}
+
+void A1C_Item_float64(A1C_Item *item, A1C_Float64 value) {
+  item->type = A1C_ItemType_float64;
+  item->float64 = value;
 }
 
 void A1C_Item_boolean(A1C_Item *item, bool value) {
@@ -574,8 +584,10 @@ void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena, size_t limitBytes,
                       bool referenceSource) {
   memset(decoder, 0, sizeof(A1C_Decoder));
   assert(arena.calloc != NULL);
+  // TODO: We can't keep this in the arena
   decoder->arena = A1C_LimitedArena_init(arena, limitBytes);
   decoder->referenceSource = referenceSource;
+  decoder->rejectUnknownSimple = false;
 }
 
 static void A1C_Decoder_reset(A1C_Decoder *decoder, const uint8_t *start,
@@ -612,6 +624,11 @@ bool A1C_NODISCARD A1C_Decoder_errorImpl(A1C_Decoder *decoder,
 
 #define A1C_Decoder_error(decoder, errorType)                                  \
   A1C_Decoder_errorImpl((decoder), (errorType), __FILE__, __LINE__)
+
+size_t A1C_Decoder_remaining(const A1C_Decoder *decoder) {
+  assert(decoder->ptr <= decoder->end);
+  return (size_t)(decoder->end - decoder->ptr);
+}
 
 bool A1C_NODISCARD A1C_Decoder_peek(A1C_Decoder *decoder, void *out,
                                     size_t size) {
@@ -699,80 +716,103 @@ static bool A1C_NODISCARD A1C_Decoder_decodeInt(A1C_Decoder *decoder,
   uint64_t neg;
   A1C_RET_IF_ERR(A1C_Decoder_readCount(decoder, header, &neg));
   if (neg >= ((uint64_t)1 << 63)) {
-    return A1C_Decoder_error(decoder, A1C_ErrorType_integerOverflow);
+    return A1C_Decoder_error(decoder,
+                             A1C_ErrorType_largeNegativeIntegerUnsupported);
   }
   A1C_Item_int64(item, (int64_t)~neg);
+  return true;
+}
+
+static bool A1C_NODISCARD A1C_Decoder_decodeDataDefinite(A1C_Decoder *decoder,
+                                                         A1C_ItemHeader header,
+                                                         A1C_Item *item,
+                                                         bool referenceSource) {
+  size_t size;
+  A1C_RET_IF_ERR(A1C_Decoder_readSize(decoder, header, &size));
+  if (A1C_Decoder_remaining(decoder) < size) {
+    // Check before allocating to avoid allocating huge amounts of memory
+    return A1C_Decoder_error(decoder, A1C_ErrorType_truncated);
+  }
+  const uint8_t *data;
+  if (referenceSource) {
+    data = decoder->ptr;
+    A1C_RET_IF_ERR(A1C_Decoder_skip(decoder, size));
+  } else {
+    uint8_t *buf = A1C_Arena_calloc(&decoder->arena, size, 1);
+    if (buf == NULL) {
+      return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
+    }
+    A1C_RET_IF_ERR(A1C_Decoder_read(decoder, buf, size));
+    data = buf;
+  }
+  if (A1C_ItemHeader_majorType(header) == A1C_MajorType_bytes) {
+    A1C_Item_bytes_ref(item, data, size);
+  } else {
+    A1C_Item_string_ref(item, (const char *)data, size);
+  }
   return true;
 }
 
 static bool A1C_NODISCARD A1C_Decoder_decodeData(A1C_Decoder *decoder,
                                                  A1C_ItemHeader header,
                                                  A1C_Item *item) {
-  size_t singleSize;
-  A1C_RET_IF_ERR(A1C_Decoder_readSize(decoder, header, &singleSize));
-  const uint8_t *data;
-  size_t totalSize = 0;
-  const A1C_MajorType majorType = A1C_ItemHeader_majorType(header);
-  if (singleSize == 31) {
-    A1C_Item *previous = NULL;
-    for (;;) {
-      A1C_ItemHeader childHeader;
-      A1C_RET_IF_ERR(
-          A1C_Decoder_peek(decoder, &childHeader, sizeof(childHeader)));
-      if (A1C_ItemHeader_isBreak(childHeader)) {
-        break;
-      }
+  if (!A1C_ItemHeader_isIndefinite(header)) {
+    return A1C_Decoder_decodeDataDefinite(decoder, header, item,
+                                          decoder->referenceSource);
+  }
 
-      if (A1C_ItemHeader_majorType(childHeader) != majorType ||
-          A1C_ItemHeader_isIndefinite(childHeader)) {
-        return A1C_Decoder_error(decoder, A1C_ErrorType_invalidChunkedString);
-      }
-      A1C_Item *child = A1C_Decoder_decodeOne(decoder);
-      if (child == NULL) {
-        return NULL;
-      }
-      const size_t size = majorType == A1C_MajorType_bytes ? child->bytes.size
-                                                           : child->string.size;
-      if (A1C_overflowAdd(totalSize, size, &totalSize)) {
-        return A1C_Decoder_error(decoder, A1C_ErrorType_integerOverflow);
-      }
-      child->parent = previous;
-      previous = child;
+  const A1C_MajorType majorType = A1C_ItemHeader_majorType(header);
+  size_t totalSize = 0;
+  A1C_Item *previous = NULL;
+  for (;;) {
+    A1C_ItemHeader childHeader;
+    A1C_RET_IF_ERR(
+        A1C_Decoder_read(decoder, &childHeader, sizeof(childHeader)));
+    if (!A1C_ItemHeader_isLegal(childHeader)) {
+      return A1C_Decoder_error(decoder, A1C_ErrorType_invalidItemHeader);
     }
-    uint8_t *buf = A1C_Arena_calloc(&decoder->arena, totalSize, 1);
-    if (buf == NULL) {
+    if (A1C_ItemHeader_isBreak(childHeader)) {
+      break;
+    }
+
+    if (A1C_ItemHeader_majorType(childHeader) != majorType ||
+        A1C_ItemHeader_isIndefinite(childHeader)) {
+      return A1C_Decoder_error(decoder, A1C_ErrorType_invalidChunkedString);
+    }
+    A1C_Item *child = A1C_Arena_calloc(&decoder->arena, 1, sizeof(A1C_Item));
+    if (child == NULL) {
       return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
     }
-    uint8_t *bufEnd = buf + totalSize;
-    while (previous != NULL) {
-      const uint8_t *chunkPtr = majorType == A1C_MajorType_bytes
-                                    ? previous->bytes.data
-                                    : (const uint8_t *)previous->string.data;
-      const size_t chunkSize = majorType == A1C_MajorType_bytes
-                                   ? previous->bytes.size
-                                   : previous->string.size;
-      if (chunkSize > 0) {
-        bufEnd -= chunkSize;
-        assert(bufEnd >= buf);
-        memcpy(bufEnd, chunkPtr, chunkSize);
-      }
-      previous = previous->parent;
+    A1C_RET_IF_ERR(
+        A1C_Decoder_decodeDataDefinite(decoder, childHeader, child, true));
+    const size_t size = majorType == A1C_MajorType_bytes ? child->bytes.size
+                                                         : child->string.size;
+    if (A1C_overflowAdd(totalSize, size, &totalSize)) {
+      return A1C_Decoder_error(decoder, A1C_ErrorType_integerOverflow);
     }
-    assert(bufEnd == buf);
-    data = buf;
-  } else {
-    if (decoder->referenceSource) {
-      data = decoder->ptr;
-    } else {
-      uint8_t *buf = A1C_Arena_calloc(&decoder->arena, singleSize, 1);
-      if (buf == NULL) {
-        return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
-      }
-      A1C_RET_IF_ERR(A1C_Decoder_read(decoder, buf, singleSize));
-      data = buf;
-    }
-    totalSize = singleSize;
+    child->parent = previous;
+    previous = child;
   }
+  uint8_t *data = A1C_Arena_calloc(&decoder->arena, totalSize, 1);
+  if (data == NULL) {
+    return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
+  }
+  uint8_t *dataEnd = data + totalSize;
+  while (previous != NULL) {
+    const uint8_t *chunkPtr = majorType == A1C_MajorType_bytes
+                                  ? previous->bytes.data
+                                  : (const uint8_t *)previous->string.data;
+    const size_t chunkSize = majorType == A1C_MajorType_bytes
+                                 ? previous->bytes.size
+                                 : previous->string.size;
+    if (chunkSize > 0) {
+      dataEnd -= chunkSize;
+      assert(dataEnd >= data);
+      memcpy(dataEnd, chunkPtr, chunkSize);
+    }
+    previous = previous->parent;
+  }
+  assert(dataEnd == data);
   if (majorType == A1C_MajorType_bytes) {
     A1C_Item_bytes_ref(item, data, totalSize);
   } else {
@@ -786,7 +826,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeArray(A1C_Decoder *decoder,
                                                   A1C_Item *item) {
   size_t size;
   A1C_RET_IF_ERR(A1C_Decoder_readSize(decoder, header, &size));
-  if (size == 31) {
+  if (A1C_ItemHeader_isIndefinite(header)) {
     size = 0;
     A1C_Item *previous = NULL;
     for (;;) {
@@ -794,6 +834,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeArray(A1C_Decoder *decoder,
       A1C_RET_IF_ERR(
           A1C_Decoder_peek(decoder, &childHeader, sizeof(childHeader)));
       if (A1C_ItemHeader_isBreak(childHeader)) {
+        A1C_RET_IF_ERR(A1C_Decoder_skip(decoder, sizeof(childHeader)));
         break;
       }
       A1C_Item *child = A1C_Decoder_decodeOne(decoder);
@@ -801,6 +842,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeArray(A1C_Decoder *decoder,
         return NULL;
       }
       child->parent = previous;
+      previous = child;
       ++size;
     }
     A1C_Array *array = A1C_Item_array(item, size, &decoder->arena);
@@ -816,6 +858,11 @@ static bool A1C_NODISCARD A1C_Decoder_decodeArray(A1C_Decoder *decoder,
     }
     assert(size == 0);
   } else {
+    if (A1C_Decoder_remaining(decoder) < size) {
+      // Each item must be at least one byte
+      // Check remaining before allocation to avoid huge allocations.
+      return A1C_Decoder_error(decoder, A1C_ErrorType_truncated);
+    }
     A1C_Array *array = A1C_Item_array(item, size, &decoder->arena);
     if (array == NULL) {
       return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
@@ -833,7 +880,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeMap(A1C_Decoder *decoder,
                                                 A1C_Item *item) {
   size_t size;
   A1C_RET_IF_ERR(A1C_Decoder_readSize(decoder, header, &size));
-  if (size == 31) {
+  if (A1C_ItemHeader_isIndefinite(header)) {
     size = 0;
     A1C_Item *prevKey = NULL;
     A1C_Item *prevVal = NULL;
@@ -841,6 +888,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeMap(A1C_Decoder *decoder,
       A1C_ItemHeader keyHeader;
       A1C_RET_IF_ERR(A1C_Decoder_peek(decoder, &keyHeader, sizeof(keyHeader)));
       if (A1C_ItemHeader_isBreak(keyHeader)) {
+        A1C_RET_IF_ERR(A1C_Decoder_skip(decoder, sizeof(keyHeader)));
         break;
       }
       A1C_Item *key = A1C_Decoder_decodeOne(decoder);
@@ -879,6 +927,11 @@ static bool A1C_NODISCARD A1C_Decoder_decodeMap(A1C_Decoder *decoder,
     }
     assert(size == 0);
   } else {
+    if (A1C_Decoder_remaining(decoder) < size) {
+      // Each item must be at least one byte
+      // Check remaining before allocation to avoid huge allocations.
+      return A1C_Decoder_error(decoder, A1C_ErrorType_truncated);
+    }
     A1C_Map *map = A1C_Item_map(item, size, &decoder->arena);
     if (map == NULL) {
       return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
@@ -920,6 +973,9 @@ static bool A1C_NODISCARD A1C_Decoder_decodeSpecial(A1C_Decoder *decoder,
   } else if (shortCount == 23) {
     A1C_Item_undefined(item);
   } else if (shortCount == 24) {
+    if (decoder->rejectUnknownSimple) {
+      return A1C_Decoder_error(decoder, A1C_ErrorType_invalidSimpleEncoding);
+    }
     uint8_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
     if (value < 32) {
@@ -927,7 +983,10 @@ static bool A1C_NODISCARD A1C_Decoder_decodeSpecial(A1C_Decoder *decoder,
     }
     A1C_Item_simple(item, value);
   } else if (shortCount == 25) {
-    return A1C_Decoder_error(decoder, A1C_ErrorType_halfPrecisionUnsupported);
+    uint16_t value;
+    A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
+    value = A1C_byteswap16(value);
+    A1C_Item_float16(item, value);
   } else if (shortCount == 26) {
     uint32_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
@@ -943,6 +1002,9 @@ static bool A1C_NODISCARD A1C_Decoder_decodeSpecial(A1C_Decoder *decoder,
     memcpy(&float64, &value, sizeof(float64));
     A1C_Item_float64(item, float64);
   } else if (shortCount < 20) {
+    if (decoder->rejectUnknownSimple) {
+      return A1C_Decoder_error(decoder, A1C_ErrorType_invalidSimpleEncoding);
+    }
     A1C_Item_simple(item, (uint8_t)shortCount);
   } else if (shortCount == 31) {
     return A1C_Decoder_error(decoder, A1C_ErrorType_breakNotAllowed);
@@ -1017,7 +1079,12 @@ A1C_Item *A1C_Decoder_decode(A1C_Decoder *decoder, const uint8_t *data,
     decoder->error.srcPos = 0;
     return NULL;
   }
-  return A1C_Decoder_decodeOne(decoder);
+  A1C_Item *item = A1C_Decoder_decodeOne(decoder);
+  if (item != NULL && decoder->ptr < decoder->end) {
+    (void)A1C_Decoder_error(decoder, A1C_ErrorType_trailingData);
+    return NULL;
+  }
+  return item;
 }
 
 ////////////////////////////////////////
@@ -1206,6 +1273,11 @@ static bool A1C_NODISCARD A1C_Encoder_encodeSpecial(A1C_Encoder *encoder,
     }
     return A1C_Encoder_encodeHeaderAndCount(encoder, A1C_MajorType_special,
                                             item->simple);
+  } else if (item->type == A1C_ItemType_float16) {
+    A1C_ItemHeader header = A1C_ItemHeader_make(A1C_MajorType_special, 25);
+    A1C_RET_IF_ERR(A1C_Encoder_write(encoder, &header, sizeof(header)));
+    const uint16_t value = A1C_byteswap16(item->float16);
+    return A1C_Encoder_write(encoder, &value, sizeof(value));
   } else if (item->type == A1C_ItemType_float32) {
     A1C_ItemHeader header = A1C_ItemHeader_make(A1C_MajorType_special, 26);
     A1C_RET_IF_ERR(A1C_Encoder_write(encoder, &header, sizeof(header)));
@@ -1250,6 +1322,7 @@ bool A1C_Encoder_encodeOne(A1C_Encoder *encoder, const A1C_Item *item) {
   case A1C_ItemType_boolean:
   case A1C_ItemType_null:
   case A1C_ItemType_undefined:
+  case A1C_ItemType_float16:
   case A1C_ItemType_float32:
   case A1C_ItemType_float64:
   case A1C_ItemType_simple:
@@ -1286,10 +1359,10 @@ static bool A1C_NODISCARD A1C_Encoder_jsonNumeric(A1C_Encoder *encoder,
   } else if (item->type == A1C_ItemType_int64) {
     len = snprintf(buffer, sizeof(buffer), "%lld", item->int64);
   } else if (item->type == A1C_ItemType_float32) {
-    len = snprintf(buffer, sizeof(buffer), "%f", item->float32);
+    len = snprintf(buffer, sizeof(buffer), "%g", item->float32);
   } else {
     assert(item->type == A1C_ItemType_float64);
-    len = snprintf(buffer, sizeof(buffer), "%f", item->float64);
+    len = snprintf(buffer, sizeof(buffer), "%g", item->float64);
   }
   if (len < 0 || (size_t)len >= sizeof(buffer)) {
     return A1C_Encoder_error(encoder, A1C_ErrorType_formatError);
@@ -1321,8 +1394,29 @@ static bool A1C_NODISCARD A1C_Encoder_jsonBytes(A1C_Encoder *encoder,
 static bool A1C_NODISCARD A1C_Encoder_jsonString(A1C_Encoder *encoder,
                                                  const A1C_Item *item) {
   A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '"'));
-  A1C_RET_IF_ERR(
-      A1C_Encoder_write(encoder, item->string.data, item->string.size));
+  for (size_t i = 0; i < item->string.size; ++i) {
+    const char c = item->string.data[i];
+    if (c == '"') {
+      A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "\\\""));
+    } else if (c == '\\') {
+      A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "\\\\"));
+    } else if (c == '\r') {
+      A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "\\r"));
+    } else if (c == '\n') {
+      A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "\\n"));
+    } else if (c == '\t') {
+      A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "\\t"));
+    } else if (c < 0x20 || c > 0x7E) {
+      char buffer[7];
+      int len = snprintf(buffer, sizeof(buffer), "\\u%04x", (unsigned int)(uint8_t)c);
+      if (len < 0 || (size_t)len >= sizeof(buffer)) {
+        return A1C_Encoder_error(encoder, A1C_ErrorType_formatError);
+      }
+      A1C_RET_IF_ERR(A1C_Encoder_write(encoder, buffer, (size_t)len));
+    } else {
+      A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, c));
+    }
+  }
   A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '"'));
   return true;
 }
@@ -1391,7 +1485,7 @@ static bool A1C_NODISCARD A1C_Encoder_jsonTag(A1C_Encoder *encoder,
 }
 
 static bool A1C_NODISCARD A1C_Encoder_jsonSimple(A1C_Encoder *encoder,
-                                              const A1C_Item *item) {
+                                                 const A1C_Item *item) {
   A1C_Item children[4];
   A1C_Item map;
   map.type = A1C_ItemType_map;
@@ -1407,6 +1501,23 @@ static bool A1C_NODISCARD A1C_Encoder_jsonSimple(A1C_Encoder *encoder,
   return A1C_Encoder_jsonMap(encoder, &map);
 }
 
+static bool A1C_NODISCARD A1C_Encoder_jsonHalf(A1C_Encoder *encoder,
+                                               const A1C_Item *item) {
+  A1C_Item children[4];
+  A1C_Item map;
+  map.type = A1C_ItemType_map;
+  map.map.keys = children + 0;
+  map.map.values = children + 2;
+  map.map.size = 2;
+
+  A1C_Item_string_refCStr(map.map.keys + 0, "type");
+  A1C_Item_string_refCStr(map.map.values + 0, "half");
+  A1C_Item_string_refCStr(map.map.keys + 1, "uint16");
+  A1C_Item_uint64(map.map.values + 1, item->float16);
+
+  return A1C_Encoder_jsonMap(encoder, &map);
+}
+
 bool A1C_Encoder_jsonOne(A1C_Encoder *encoder, const A1C_Item *item) {
   encoder->currentItem = item;
   switch (item->type) {
@@ -1415,6 +1526,9 @@ bool A1C_Encoder_jsonOne(A1C_Encoder *encoder, const A1C_Item *item) {
   case A1C_ItemType_float32:
   case A1C_ItemType_float64:
     A1C_RET_IF_ERR(A1C_Encoder_jsonNumeric(encoder, item));
+    break;
+  case A1C_ItemType_float16:
+    A1C_RET_IF_ERR(A1C_Encoder_jsonHalf(encoder, item));
     break;
   case A1C_ItemType_bytes:
     A1C_RET_IF_ERR(A1C_Encoder_jsonBytes(encoder, item));

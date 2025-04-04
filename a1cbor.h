@@ -46,6 +46,7 @@ typedef enum {
   A1C_ItemType_boolean,
   A1C_ItemType_null,
   A1C_ItemType_undefined,
+  A1C_ItemType_float16,
   A1C_ItemType_float32,
   A1C_ItemType_float64,
   A1C_ItemType_simple,
@@ -55,6 +56,7 @@ typedef enum {
 typedef uint64_t A1C_UInt64;
 typedef int64_t A1C_Int64;
 typedef bool A1C_Bool;
+typedef uint16_t A1C_Float16;
 typedef double A1C_Float64;
 typedef float A1C_Float32;
 
@@ -92,8 +94,9 @@ typedef struct A1C_Item {
     A1C_Bool boolean;
     A1C_UInt64 uint64;
     A1C_Int64 int64;
-    A1C_Float64 float64;
+    A1C_Float16 float16;
     A1C_Float32 float32;
+    A1C_Float64 float64;
     A1C_Bytes bytes;
     A1C_String string;
     A1C_Map map;
@@ -113,16 +116,17 @@ typedef enum {
   A1C_ErrorType_badAlloc,
   A1C_ErrorType_truncated,
   A1C_ErrorType_invalidItemHeader,
+  A1C_ErrorType_largeNegativeIntegerUnsupported,
   A1C_ErrorType_integerOverflow,
   A1C_ErrorType_invalidChunkedString,
   A1C_ErrorType_maxDepthExceeded,
   A1C_ErrorType_invalidSimpleEncoding,
-  A1C_ErrorType_halfPrecisionUnsupported,
   A1C_ErrorType_breakNotAllowed,
   A1C_ErrorType_writeFailed,
   A1C_ErrorType_invalidItemType,
   A1C_ErrorType_invalidSimpleValue,
   A1C_ErrorType_formatError,
+  A1C_ErrorType_trailingData,
 } A1C_ErrorType;
 
 typedef struct {
@@ -153,6 +157,7 @@ typedef struct {
   size_t depth;
   size_t maxDepth;
   bool referenceSource;
+  bool rejectUnknownSimple;
 } A1C_Decoder;
 
 void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena, size_t limitBytes,
@@ -182,8 +187,9 @@ A1C_Item *A1C_NODISCARD A1C_Item_root(A1C_Arena *arena);
 
 void A1C_Item_uint64(A1C_Item *item, A1C_UInt64 value);
 void A1C_Item_int64(A1C_Item *item, A1C_Int64 value);
-void A1C_Item_float64(A1C_Item *item, A1C_Float64 value);
+void A1C_Item_float16(A1C_Item *item, A1C_Float16 value);
 void A1C_Item_float32(A1C_Item *item, A1C_Float32 value);
+void A1C_Item_float64(A1C_Item *item, A1C_Float64 value);
 void A1C_Item_boolean(A1C_Item *item, bool value);
 void A1C_Item_null(A1C_Item *item);
 void A1C_Item_undefined(A1C_Item *item);

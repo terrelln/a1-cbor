@@ -2,6 +2,7 @@
 #include "../a1cbor.h"
 
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string.h>
 
 #include <gtest/gtest.h>
@@ -13,6 +14,7 @@ bool operator!=(const A1C_Item &a, const A1C_Item &b) { return !(a == b); }
 
 namespace {
 using namespace ::testing;
+using json = nlohmann::json;
 
 using Ptrs = std::vector<std::unique_ptr<uint8_t[]>>;
 
@@ -76,12 +78,13 @@ protected:
     return str;
   }
 
-  std::string json(const A1C_Item *item) {
+  std::string encodeJson(const A1C_Item *item) {
     std::string str;
     A1C_Encoder encoder;
     A1C_Encoder_init(&encoder, appendToString, &str);
     if (!A1C_Encoder_json(&encoder, item)) {
-      throw std::runtime_error{printError("JSON Encoding failed", encoder.error)};
+      throw std::runtime_error{
+          printError("JSON Encoding failed", encoder.error)};
     }
     return str;
   }
@@ -92,6 +95,17 @@ protected:
     A1C_Decoder_init(&decoder, arena, limit, referenceSource);
     A1C_Item *item = A1C_Decoder_decode(
         &decoder, reinterpret_cast<const uint8_t *>(data.data()), data.size());
+    if (item == nullptr) {
+      throw std::runtime_error{printError("Decoding failed", decoder.error)};
+    }
+    return item;
+  }
+
+  A1C_Item *decode(const std::vector<uint8_t> &data, size_t limit = 0,
+                   bool referenceSource = false) {
+    A1C_Decoder decoder;
+    A1C_Decoder_init(&decoder, arena, limit, referenceSource);
+    A1C_Item *item = A1C_Decoder_decode(&decoder, data.data(), data.size());
     if (item == nullptr) {
       throw std::runtime_error{printError("Decoding failed", decoder.error)};
     }
@@ -713,8 +727,8 @@ static constexpr char kExpectedJSON[] = R"({
   "key": "value",
   42: [
     -1,
-    -3.140000,
-    3.140000,
+    -3.14,
+    3.14,
     true,
     false,
     null,
@@ -744,7 +758,7 @@ static constexpr char kExpectedJSON[] = R"({
   ]
 })";
 
-TEST_F(A1CBorTest, JSON) {
+TEST_F(A1CBorTest, Json) {
   auto item = A1C_Item_root(&arena);
   ASSERT_NE(item, nullptr);
   auto map = A1C_Item_map(item, 2, &arena);
@@ -779,6 +793,40 @@ TEST_F(A1CBorTest, JSON) {
   A1C_Item_bytes_ref(array->items + 3, shortData, 3);
   A1C_Item_bytes_ref(array->items + 4, shortData, 4);
 
-  auto encoded = json(item);
+  auto encoded = encodeJson(item);
   EXPECT_EQ(encoded, kExpectedJSON) << encoded;
+}
+
+TEST_F(A1CBorTest, JsonRoundTrip) {
+  json data;
+  data["key"] = "value";
+  data["null"] = nullptr;
+  data["array"] = json::array();
+  data["array"].push_back(-1);
+  data["array"].push_back(-3.14);
+  data["array"].push_back(3.14);
+  data["array"].push_back(true);
+  data["array"].push_back(false);
+  data["array"].push_back(nullptr);
+  data["array"].push_back("hello world1");
+  data["array"].push_back(json::object({
+      {"type", "tag"},
+      {"tag", 100},
+      {"value", json::array({0, 1, 2})},
+  }));
+  data["false"] = false;
+  data["true"] = true;
+  data["map"] = json::object();
+  data["nested"] =
+      json::object({{"map", json::object()}, {"array", json::array()}});
+
+  auto encoded = json::to_cbor(data);
+  auto item = decode(encoded);
+  auto jsonStr = encodeJson(item);
+  auto decoded = json::parse(jsonStr);
+  ASSERT_EQ(data, decoded);
+
+  auto reencoded = encode(item);
+  ASSERT_EQ(encoded.size(), reencoded.size());
+  ASSERT_EQ(memcmp(encoded.data(), reencoded.data(), encoded.size()), 0);
 }
