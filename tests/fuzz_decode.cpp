@@ -7,7 +7,7 @@
 #include "../a1cbor.h"
 
 namespace {
-using Ptrs = std::vector<std::unique_ptr<uint8_t[]>>;
+using Ptrs = std::pair<size_t, std::vector<std::unique_ptr<uint8_t[]>>>;
 
 void *testCalloc(void *opaque, size_t bytes) {
   auto ptrs = static_cast<Ptrs *>(opaque);
@@ -19,8 +19,9 @@ void *testCalloc(void *opaque, size_t bytes) {
     return nullptr;
   }
   memset(ptr.get(), 0, bytes);
-  ptrs->push_back(std::move(ptr));
-  return ptrs->back().get();
+  ptrs->second.push_back(std::move(ptr));
+  ptrs->first += bytes;
+  return ptrs->second.back().get();
 }
 size_t appendToString(void *opaque, const uint8_t *data, size_t size) {
   auto str = static_cast<std::string *>(opaque);
@@ -239,18 +240,65 @@ bool equal(const A1C_Item *a, const cbor_item_t *b) {
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   cbor_set_allocs(limitedAlloc, limitedRealloc, limitedFree);
-  Ptrs ptrs;
+  Ptrs ptrs{};
   A1C_Arena arena;
   arena.calloc = testCalloc;
   arena.opaque = &ptrs;
 
-  if (size == 0) {
+  if (size < 5) {
     return 0;
   }
+  const bool referenceSource = data[--size];
+  uint32_t limit = 0;
+  memcpy(&limit, data + size - 4, sizeof(limit));
+  size -= 4;
   A1C_Decoder decoder;
-  A1C_Decoder_init(&decoder, arena, 0, data[--size]);
+  A1C_Decoder_init(&decoder, arena, 0, referenceSource);
 
   auto item = A1C_Decoder_decode(&decoder, data, size);
+
+  if (limit != 0) {
+    Ptrs ptrs2{};
+    A1C_Decoder decoder2;
+    auto arena2 = arena;
+    arena2.opaque = &ptrs2;
+    A1C_Decoder_init(&decoder2, arena2, limit, referenceSource);
+    auto item2 = A1C_Decoder_decode(&decoder2, data, size);
+    if (ptrs2.first > limit) {
+      fail("Allocation limit not respected", item2, decoder2.error);
+    }
+    if (item2 != NULL) {
+      if (item == NULL) {
+        fail("Adding limit made decoding pass", item2, decoder.error);
+      }
+      if (ptrs.first > limit || ptrs2.first > limit) {
+        fail("Memory limit not respected", item, decoder.error);
+      }
+      if (!A1C_Item_strictEq(item, item2)) {
+        fail("Strict equality failed with limit", item, decoder.error);
+      }
+    } else {
+      if (decoder2.error.type == A1C_ErrorType_badAlloc) {
+        if (ptrs.first <= limit) {
+          fail("Got bad alloc without surpassing limit", item, decoder2.error);
+        }
+      } else if (item != NULL) {
+        fail("Decoding failed with limit but original decoding passed", item,
+             decoder2.error);
+      } else if (decoder2.error.type != decoder.error.type ||
+                 decoder2.error.line != decoder.error.line) {
+        fail("Decoding failed with different error types when using limits",
+             item, decoder2.error);
+      }
+    }
+    if (item == NULL) {
+      if (item2 != NULL) {
+      }
+    } else {
+      if (item2 == NULL) {
+      }
+    }
+  }
 
   cbor_load_result result;
   auto ref = cbor_load(data, size, &result);
@@ -285,7 +333,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
   A1C_Encoder_init(&encoder, noop, nullptr);
   if (!A1C_Encoder_json(&encoder, item)) {
-    fail("JSON failed!", item, encoder.error);
+    if (encoder.error.type != A1C_ErrorType_jsonUTF8Unsupported) {
+      fail("JSON failed!", item, encoder.error);
+    }
   }
 
   auto item2 =

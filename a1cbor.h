@@ -30,10 +30,16 @@ typedef struct {
   void *opaque;
 } A1C_Arena;
 
-/// Wraps @p arena and limits the total allocated bytes to @p limitBytes
-A1C_Arena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes);
-/// Resets the allocated bytes to 0.
-void A1C_LimitedArena_reset(A1C_Arena *arena);
+typedef struct {
+  A1C_Arena backingArena;
+  size_t allocatedBytes;
+  size_t limitBytes;
+} A1C_LimitedArena;
+
+void *A1C_LimitedArena_calloc(void *opaque, size_t bytes);
+A1C_LimitedArena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes);
+A1C_Arena A1C_LimitedArena_arena(A1C_LimitedArena* limitedArena);
+void A1C_LimitedArena_reset(A1C_LimitedArena *limitedArena);
 
 typedef enum {
   A1C_ItemType_invalid = 0,
@@ -148,6 +154,7 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type);
 #define A1C_MAX_DEPTH_DEFAULT 32
 
 typedef struct {
+  A1C_LimitedArena limitedArena;
   A1C_Arena arena;
 
   A1C_Error error;
@@ -236,6 +243,7 @@ void A1C_Encoder_init(A1C_Encoder *encoder, A1C_Encoder_WriteCallback write,
 bool A1C_NODISCARD A1C_Encoder_encode(A1C_Encoder *encoder,
                                       const A1C_Item *item);
 
+/// @warning Fails on non-ascii strings
 bool A1C_NODISCARD A1C_Encoder_json(A1C_Encoder *encoder, const A1C_Item *item);
 
 ////////////////////////////////////////

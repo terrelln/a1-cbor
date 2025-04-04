@@ -197,13 +197,7 @@ static void *A1C_Arena_calloc(A1C_Arena *arena, size_t count, size_t size) {
   return arena->calloc(arena->opaque, bytes);
 }
 
-typedef struct {
-  A1C_Arena backingArena;
-  size_t allocatedBytes;
-  size_t limitBytes;
-} A1C_LimitedArena;
-
-static void *A1C_LimitedArena_calloc(void *opaque, size_t bytes) {
+void *A1C_LimitedArena_calloc(void *opaque, size_t bytes) {
   A1C_LimitedArena *arena = (A1C_LimitedArena *)opaque;
   if (arena == NULL) {
     return NULL;
@@ -224,27 +218,28 @@ static void *A1C_LimitedArena_calloc(void *opaque, size_t bytes) {
   return result;
 }
 
-A1C_Arena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes) {
-  A1C_LimitedArena *limitedArena =
-      A1C_Arena_calloc(&arena, 1, sizeof(A1C_LimitedArena));
-  if (limitedArena != NULL) {
-    limitedArena->backingArena = arena;
-    limitedArena->allocatedBytes = 0;
-    limitedArena->limitBytes = limitBytes;
-  }
-  arena.calloc = A1C_LimitedArena_calloc;
-  arena.opaque = limitedArena;
+A1C_LimitedArena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes) {
+  A1C_LimitedArena limitedArena = {
+      .backingArena = arena,
+      .allocatedBytes = 0,
+      .limitBytes = limitBytes,
+  };
+  return limitedArena;
+}
+
+A1C_Arena A1C_LimitedArena_arena(A1C_LimitedArena *limitedArena) {
+  A1C_Arena arena = {
+      .calloc = A1C_LimitedArena_calloc,
+      .opaque = limitedArena,
+  };
 
   return arena;
 }
 
-void A1C_LimitedArena_reset(A1C_Arena *arena) {
-  A1C_LimitedArena *limitedArena = (A1C_LimitedArena *)arena->opaque;
-  if (limitedArena != NULL) {
-    assert(limitedArena->limitBytes == 0 ||
-           limitedArena->allocatedBytes <= limitedArena->limitBytes);
-    limitedArena->allocatedBytes = 0;
-  }
+void A1C_LimitedArena_reset(A1C_LimitedArena *limitedArena) {
+  assert(limitedArena->limitBytes == 0 ||
+         limitedArena->allocatedBytes <= limitedArena->limitBytes);
+  limitedArena->allocatedBytes = 0;
 }
 
 ////////////////////////////////////////
@@ -586,8 +581,8 @@ void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena, size_t limitBytes,
                       bool referenceSource) {
   memset(decoder, 0, sizeof(A1C_Decoder));
   assert(arena.calloc != NULL);
-  // TODO: We can't keep this in the arena
-  decoder->arena = A1C_LimitedArena_init(arena, limitBytes);
+  decoder->limitedArena = A1C_LimitedArena_init(arena, limitBytes);
+  decoder->arena = A1C_LimitedArena_arena(&decoder->limitedArena);
   decoder->referenceSource = referenceSource;
   decoder->rejectUnknownSimple = false;
 }
@@ -603,7 +598,7 @@ static void A1C_Decoder_reset(A1C_Decoder *decoder, const uint8_t *start,
   if (decoder->maxDepth == 0) {
     decoder->maxDepth = A1C_MAX_DEPTH_DEFAULT;
   }
-  A1C_LimitedArena_reset(&decoder->arena);
+  A1C_LimitedArena_reset(&decoder->limitedArena);
 }
 
 static A1C_Item *A1C_NODISCARD A1C_Decoder_decodeOne(A1C_Decoder *decoder);
@@ -1413,7 +1408,8 @@ static bool A1C_NODISCARD A1C_Encoder_jsonString(A1C_Encoder *encoder,
       A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "\\t"));
     } else if (c < 0x20 || c > 0x7E) {
       char buffer[7];
-      int len = snprintf(buffer, sizeof(buffer), "\\u%04x", (unsigned int)(uint8_t)c);
+      int len =
+          snprintf(buffer, sizeof(buffer), "\\u%04x", (unsigned int)(uint8_t)c);
       if (len < 0 || (size_t)len >= sizeof(buffer)) {
         return A1C_Encoder_error(encoder, A1C_ErrorType_formatError);
       }
