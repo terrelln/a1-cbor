@@ -8,7 +8,7 @@
 #include <gtest/gtest.h>
 
 bool operator==(const A1C_Item &a, const A1C_Item &b) {
-  return A1C_Item_strictEq(&a, &b);
+  return A1C_Item_eq(&a, &b);
 }
 bool operator!=(const A1C_Item &a, const A1C_Item &b) { return !(a == b); }
 
@@ -118,38 +118,6 @@ protected:
   Ptrs ptrs;
 };
 
-TEST_F(A1CBorTest, UInt64) {
-  auto testValue = [this](uint64_t value) {
-    auto item = A1C_Item_root(&arena);
-    ASSERT_NE(item, nullptr);
-    A1C_Item_uint64(item, value);
-    ASSERT_EQ(item->type, A1C_ItemType_uint64);
-    ASSERT_EQ(item->uint64, value);
-    ASSERT_EQ(item->parent, nullptr);
-    auto encoded = encode(item);
-    auto decoded = decode(encoded);
-    ASSERT_EQ(decoded->parent, nullptr);
-    ASSERT_EQ(*item, *decoded);
-  };
-
-  testValue(0);
-  testValue(42);
-  testValue(UINT8_MAX);
-  testValue(UINT16_MAX);
-  testValue(UINT32_MAX);
-  testValue(UINT64_MAX);
-
-  {
-    auto item1 = A1C_Item_root(&arena);
-    ASSERT_NE(item1, nullptr);
-    A1C_Item_uint64(item1, 0);
-    auto item2 = A1C_Item_root(&arena);
-    ASSERT_NE(item2, nullptr);
-    A1C_Item_uint64(item2, 1);
-    ASSERT_NE(*item1, *item2);
-  }
-}
-
 TEST_F(A1CBorTest, Int64) {
   auto testValue = [this](int64_t value) {
     auto item = A1C_Item_root(&arena);
@@ -161,14 +129,9 @@ TEST_F(A1CBorTest, Int64) {
     auto encoded = encode(item);
     auto decoded = decode(encoded);
     ASSERT_EQ(decoded->parent, nullptr);
-    ASSERT_EQ(decoded->type,
-              value >= 0 ? A1C_ItemType_uint64 : A1C_ItemType_int64);
+    ASSERT_EQ(decoded->type, A1C_ItemType_int64);
     ASSERT_EQ(item->int64, value);
-    if (value >= 0) {
-      ASSERT_NE(*item, *decoded);
-    } else {
-      ASSERT_EQ(*item, *decoded);
-    }
+    ASSERT_EQ(*item, *decoded);
     ASSERT_TRUE(A1C_Item_eq(item, decoded));
   };
 
@@ -177,7 +140,7 @@ TEST_F(A1CBorTest, Int64) {
   testValue(UINT8_MAX);
   testValue(UINT16_MAX);
   testValue(UINT32_MAX);
-  testValue(UINT64_MAX);
+  testValue(INT64_MAX);
 
   testValue(-1);
   testValue(-UINT8_MAX);
@@ -330,7 +293,7 @@ TEST_F(A1CBorTest, Null) {
 }
 
 TEST_F(A1CBorTest, Tag) {
-  auto testValue = [this](A1C_UInt64 value) {
+  auto testValue = [this](uint64_t value) {
     auto item = A1C_Item_root(&arena);
     ASSERT_NE(item, nullptr);
 
@@ -556,8 +519,8 @@ TEST_F(A1CBorTest, Map) {
     auto map = A1C_Item_root(&arena);
     auto m = A1C_Item_map(map, 1, &arena);
     ASSERT_NE(map, nullptr);
-    A1C_Item_uint64(m->keys + 0, 42);
-    A1C_Item_uint64(m->values + 0, 42);
+    A1C_Item_int64(m->keys + 0, 42);
+    A1C_Item_int64(m->values + 0, 42);
     testMap(map);
     EXPECT_NE(A1C_Map_get_int(m, 42), nullptr);
     EXPECT_EQ(A1C_Map_get_cstr(m, "key1"), nullptr);
@@ -637,8 +600,8 @@ TEST_F(A1CBorTest, Array) {
     auto a = A1C_Item_array(array, 1, &arena);
     ASSERT_NE(a, nullptr);
 
-    // Fill the array with a single uint64 value
-    A1C_Item_uint64(a->items + 0, 42);
+    // Fill the array with a single int64 value
+    A1C_Item_int64(a->items + 0, 42);
     testArray(array);
 
     EXPECT_EQ(A1C_Array_get(a, 1), nullptr); // out of bounds
@@ -674,7 +637,7 @@ TEST_F(A1CBorTest, LargeArray) {
   ASSERT_NE(a, nullptr);
 
   for (size_t i = 0; i < size; ++i) {
-    A1C_Item_uint64(a->items + i, i);
+    A1C_Item_int64(a->items + i, i);
   }
 
   auto encoded = encode(array);
@@ -685,8 +648,8 @@ TEST_F(A1CBorTest, LargeArray) {
   for (size_t i = 0; i < size; ++i) {
     auto item = A1C_Array_get(&decoded->array, i);
     ASSERT_NE(item, nullptr);
-    ASSERT_EQ(item->type, A1C_ItemType_uint64);
-    ASSERT_EQ(item->uint64, i);
+    ASSERT_EQ(item->type, A1C_ItemType_int64);
+    ASSERT_EQ(item->int64, i);
   }
 }
 
@@ -765,7 +728,7 @@ TEST_F(A1CBorTest, Json) {
   ASSERT_NE(map, nullptr);
   A1C_Item_string_refCStr(map->keys + 0, "key");
   A1C_Item_string_refCStr(map->values + 0, "value");
-  A1C_Item_uint64(map->keys + 1, 42);
+  A1C_Item_int64(map->keys + 1, 42);
   auto array = A1C_Item_array(map->values + 1, 14, &arena);
   ASSERT_NE(array, nullptr);
   A1C_Item_int64(array->items + 0, -1);

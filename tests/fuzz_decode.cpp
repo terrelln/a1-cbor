@@ -78,16 +78,18 @@ void *limitedRealloc(void *ptr, size_t size) {
 
 bool equal(const A1C_Item *a, const cbor_item_t *b) {
   switch (a->type) {
-  case A1C_ItemType_uint64:
-    if (!cbor_isa_uint(b)) {
-      return false;
-    }
-    return a->uint64 == cbor_get_int(b);
   case A1C_ItemType_int64:
-    if (!cbor_isa_negint(b)) {
-      return false;
+    if (a->int64 >= 0) {
+        if (!cbor_isa_uint(b)) {
+        return false;
+        }
+        return a->int64 == cbor_get_int(b);
+    } else {
+        if (!cbor_isa_negint(b)) {
+        return false;
+        }
+        return a->int64 == (int64_t)~cbor_get_int(b);
     }
-    return a->int64 == (int64_t)~cbor_get_int(b);
   case A1C_ItemType_float16:
     if (!cbor_is_float(b) || cbor_float_get_width(b) != CBOR_FLOAT_16) {
       return false;
@@ -274,7 +276,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       if (ptrs.first > limit || ptrs2.first > limit) {
         fail("Memory limit not respected", item, decoder.error);
       }
-      if (!A1C_Item_strictEq(item, item2)) {
+      if (!A1C_Item_eq(item, item2)) {
         fail("Strict equality failed with limit", item, decoder.error);
       }
     } else {
@@ -304,7 +306,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   auto ref = cbor_load(data, size, &result);
 
   if (item == NULL) {
-    if (decoder.error.type != A1C_ErrorType_largeNegativeIntegerUnsupported &&
+    if (decoder.error.type != A1C_ErrorType_largeIntegersUnsupported &&
         decoder.error.type != A1C_ErrorType_maxDepthExceeded) {
       if (ref != NULL && result.read == size) {
         fail("Decoding failed but libcbor succeeded", nullptr, decoder.error);
@@ -344,7 +346,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     fail("Decoding re-encoded data failed!", item, decoder.error);
   }
 
-  if (!A1C_Item_strictEq(item, item2)) {
+  if (!A1C_Item_eq(item, item2)) {
     fail("Strict equality failed after encoding/decoding", item, decoder.error);
   }
   if (!A1C_Item_eq(item, item2)) {

@@ -119,7 +119,6 @@ bool approxEq(const nlohmann::json &a, const nlohmann::json &b) {
 // Sanitize floating point values, because they will differ
 void sanitize(A1C_Item *item) {
   switch (item->type) {
-  case A1C_ItemType_uint64:
   case A1C_ItemType_int64:
   case A1C_ItemType_float16:
   case A1C_ItemType_boolean:
@@ -172,7 +171,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   auto item = A1C_Decoder_decode(&decoder, cbor.data(), cbor.size());
 
   if (item == NULL) {
-    fail("Decoding failed", nullptr, decoder.error);
+    if (decoder.error.type != A1C_ErrorType_maxDepthExceeded &&
+        decoder.error.type != A1C_ErrorType_largeIntegersUnsupported) {
+      fail("Decoding failed", nullptr, decoder.error);
+    }
+    return 0;
   }
 
   A1C_Encoder encoder;
@@ -207,8 +210,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
   if (json3.is_discarded() || !approxEq(json, json3)) {
     if (hasNonAscii(json)) {
-        // JSON printing is for debugging, we don't get unicode right
-        return 0;
+      // JSON printing is for debugging, we don't get unicode right
+      return 0;
     }
     fprintf(stderr, "Original JSON: %s\n", json.dump(2).c_str());
     fprintf(stderr, "String JSON:   %s\n", str.c_str());

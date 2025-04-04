@@ -92,13 +92,12 @@ static uint64_t A1C_byteswap64(uint64_t value) {
 #endif
 }
 
-static bool A1C_isLittleEndian(void)
-{
-    const union {
-        uint32_t u;
-        uint8_t c[4];
-    } one = { 1 };
-    return one.c[0];
+static bool A1C_isLittleEndian(void) {
+  const union {
+    uint32_t u;
+    uint8_t c[4];
+  } one = {1};
+  return one.c[0];
 }
 
 static uint16_t A1C_bigEndian16(uint16_t value) {
@@ -135,7 +134,6 @@ static uint64_t A1C_bigEndian64(uint64_t value) {
       return 0;                                                                \
     }                                                                          \
   } while (0)
-
 
 const char A1C_kBase64Map[] = {
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
@@ -194,8 +192,8 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
     return "truncated";
   case A1C_ErrorType_invalidItemHeader:
     return "invalidItemHeader";
-  case A1C_ErrorType_largeNegativeIntegerUnsupported:
-    return "largeNegativeIntegerUnsupported";
+  case A1C_ErrorType_largeIntegersUnsupported:
+    return "largeIntegersUnsupported";
   case A1C_ErrorType_integerOverflow:
     return "integerOverflow";
   case A1C_ErrorType_invalidChunkedString:
@@ -299,30 +297,11 @@ static bool A1C_Item_arrayEq(const A1C_Item *a, size_t aSize, const A1C_Item *b,
 }
 
 bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b) {
-  // Special case integers: They allow equality across types.
-  if (a->type == A1C_ItemType_int64 && b->type == A1C_ItemType_uint64) {
-    if (a->int64 < 0) {
-      return false;
-    }
-    return (uint64_t)a->int64 == b->uint64;
-  }
-  if (a->type == A1C_ItemType_uint64 && b->type == A1C_ItemType_int64) {
-    if (b->int64 < 0) {
-      return false;
-    }
-    return a->uint64 == (uint64_t)b->int64;
-  }
-  return A1C_Item_strictEq(a, b);
-}
-
-bool A1C_Item_strictEq(const A1C_Item *a, const A1C_Item *b) {
   if (a->type != b->type) {
     return false;
   }
 
   switch (a->type) {
-  case A1C_ItemType_uint64:
-    return a->uint64 == b->uint64;
   case A1C_ItemType_int64:
     return a->int64 == b->int64;
   case A1C_ItemType_float16:
@@ -402,11 +381,6 @@ A1C_Item *A1C_Item_root(A1C_Arena *arena) {
   return item;
 }
 
-void A1C_Item_uint64(A1C_Item *item, A1C_UInt64 value) {
-  item->type = A1C_ItemType_uint64;
-  item->uint64 = value;
-}
-
 void A1C_Item_int64(A1C_Item *item, A1C_Int64 value) {
   item->type = A1C_ItemType_int64;
   item->int64 = value;
@@ -441,7 +415,7 @@ static void A1C_Item_simple(A1C_Item *item, A1C_Simple value) {
   item->simple = value;
 }
 
-A1C_Tag *A1C_Item_tag(A1C_Item *item, A1C_UInt64 tag, A1C_Arena *arena) {
+A1C_Tag *A1C_Item_tag(A1C_Item *item, uint64_t tag, A1C_Arena *arena) {
   A1C_Item *child = A1C_Arena_calloc(arena, 1, sizeof(A1C_Item));
   if (child == NULL) {
     return NULL;
@@ -739,9 +713,12 @@ bool A1C_NODISCARD A1C_Decoder_readSize(A1C_Decoder *decoder,
 static bool A1C_NODISCARD A1C_Decoder_decodeUInt(A1C_Decoder *decoder,
                                                  A1C_ItemHeader header,
                                                  A1C_Item *item) {
-  uint64_t value;
-  A1C_RET_IF_ERR(A1C_Decoder_readCount(decoder, header, &value));
-  A1C_Item_uint64(item, value);
+  uint64_t pos;
+  A1C_RET_IF_ERR(A1C_Decoder_readCount(decoder, header, &pos));
+  if (pos > (uint64_t)INT64_MAX) {
+    return A1C_Decoder_error(decoder, A1C_ErrorType_largeIntegersUnsupported);
+  }
+  A1C_Item_int64(item, (int64_t)pos);
   return true;
 }
 
@@ -752,8 +729,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeInt(A1C_Decoder *decoder,
   uint64_t neg;
   A1C_RET_IF_ERR(A1C_Decoder_readCount(decoder, header, &neg));
   if (neg >= ((uint64_t)1 << 63)) {
-    return A1C_Decoder_error(decoder,
-                             A1C_ErrorType_largeNegativeIntegerUnsupported);
+    return A1C_Decoder_error(decoder, A1C_ErrorType_largeIntegersUnsupported);
   }
   A1C_Item_int64(item, (int64_t)~neg);
   return true;
@@ -1214,12 +1190,12 @@ static bool A1C_NODISCARD A1C_Encoder_encodeHeaderAndCount(
 
 static bool A1C_NODISCARD A1C_Encoder_encodeInt(A1C_Encoder *encoder,
                                                 const A1C_Item *item) {
-  assert(item->type == A1C_ItemType_uint64 || item->type == A1C_ItemType_int64);
+  assert(item->type == A1C_ItemType_int64);
   A1C_MajorType majorType;
   uint64_t value;
-  if (item->type == A1C_ItemType_uint64 || item->int64 >= 0) {
+  if (item->int64 >= 0) {
     majorType = A1C_MajorType_uint;
-    value = item->uint64;
+    value = (uint64_t)item->int64;
   } else {
     majorType = A1C_MajorType_int;
     value = (uint64_t)~item->int64;
@@ -1338,7 +1314,6 @@ bool A1C_Encoder_encodeOne(A1C_Encoder *encoder, const A1C_Item *item) {
   ++encoder->depth;
   encoder->currentItem = item;
   switch (item->type) {
-  case A1C_ItemType_uint64:
   case A1C_ItemType_int64:
     A1C_RET_IF_ERR(A1C_Encoder_encodeInt(encoder, item));
     break;
@@ -1394,9 +1369,7 @@ static bool A1C_NODISCARD A1C_Encoder_jsonNumeric(A1C_Encoder *encoder,
                                                   const A1C_Item *item) {
   char buffer[32];
   int len;
-  if (item->type == A1C_ItemType_uint64) {
-    len = snprintf(buffer, sizeof(buffer), "%llu", item->uint64);
-  } else if (item->type == A1C_ItemType_int64) {
+  if (item->type == A1C_ItemType_int64) {
     len = snprintf(buffer, sizeof(buffer), "%lld", item->int64);
   } else if (item->type == A1C_ItemType_float32) {
     len = snprintf(buffer, sizeof(buffer), "%g", item->float32);
@@ -1521,7 +1494,7 @@ static bool A1C_NODISCARD A1C_Encoder_jsonTag(A1C_Encoder *encoder,
   A1C_Item_string_refCStr(map.map.keys + 0, "type");
   A1C_Item_string_refCStr(map.map.values + 0, "tag");
   A1C_Item_string_refCStr(map.map.keys + 1, "tag");
-  A1C_Item_uint64(map.map.values + 1, item->tag.tag);
+  A1C_Item_int64(map.map.values + 1, (int64_t)item->tag.tag);
   A1C_Item_string_refCStr(map.map.keys + 2, "value");
   map.map.values[2] = *item->tag.item;
 
@@ -1540,7 +1513,7 @@ static bool A1C_NODISCARD A1C_Encoder_jsonSimple(A1C_Encoder *encoder,
   A1C_Item_string_refCStr(map.map.keys + 0, "type");
   A1C_Item_string_refCStr(map.map.values + 0, "simple");
   A1C_Item_string_refCStr(map.map.keys + 1, "value");
-  A1C_Item_uint64(map.map.values + 1, item->simple);
+  A1C_Item_int64(map.map.values + 1, item->simple);
 
   return A1C_Encoder_jsonMap(encoder, &map);
 }
@@ -1557,7 +1530,7 @@ static bool A1C_NODISCARD A1C_Encoder_jsonHalf(A1C_Encoder *encoder,
   A1C_Item_string_refCStr(map.map.keys + 0, "type");
   A1C_Item_string_refCStr(map.map.values + 0, "half");
   A1C_Item_string_refCStr(map.map.keys + 1, "uint16");
-  A1C_Item_uint64(map.map.values + 1, item->float16);
+  A1C_Item_int64(map.map.values + 1, item->float16);
 
   return A1C_Encoder_jsonMap(encoder, &map);
 }
@@ -1565,7 +1538,6 @@ static bool A1C_NODISCARD A1C_Encoder_jsonHalf(A1C_Encoder *encoder,
 bool A1C_Encoder_jsonOne(A1C_Encoder *encoder, const A1C_Item *item) {
   encoder->currentItem = item;
   switch (item->type) {
-  case A1C_ItemType_uint64:
   case A1C_ItemType_int64:
   case A1C_ItemType_float32:
   case A1C_ItemType_float64:

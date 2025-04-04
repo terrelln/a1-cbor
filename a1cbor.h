@@ -31,7 +31,6 @@ extern "C" {
 
 typedef enum {
   A1C_ItemType_invalid = 0,
-  A1C_ItemType_uint64,
   A1C_ItemType_int64,
   A1C_ItemType_bytes,
   A1C_ItemType_string,
@@ -47,7 +46,6 @@ typedef enum {
   A1C_ItemType_tag,
 } A1C_ItemType;
 
-typedef uint64_t A1C_UInt64;
 typedef int64_t A1C_Int64;
 typedef bool A1C_Bool;
 typedef uint16_t A1C_Float16;
@@ -76,7 +74,7 @@ typedef struct {
 } A1C_Array;
 
 typedef struct {
-  A1C_UInt64 tag;
+  uint64_t tag;
   struct A1C_Item *item;
 } A1C_Tag;
 
@@ -86,7 +84,6 @@ typedef struct A1C_Item {
   A1C_ItemType type;
   union {
     A1C_Bool boolean;
-    A1C_UInt64 uint64;
     A1C_Int64 int64;
     A1C_Float16 float16;
     A1C_Float32 float32;
@@ -110,7 +107,7 @@ typedef enum {
   A1C_ErrorType_badAlloc,
   A1C_ErrorType_truncated,
   A1C_ErrorType_invalidItemHeader,
-  A1C_ErrorType_largeNegativeIntegerUnsupported,
+  A1C_ErrorType_largeIntegersUnsupported,
   A1C_ErrorType_integerOverflow,
   A1C_ErrorType_invalidChunkedString,
   A1C_ErrorType_maxDepthExceeded,
@@ -161,7 +158,7 @@ typedef struct {
 A1C_LimitedArena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes);
 
 /// Get an arena interface for the @p limitedArena.
-A1C_Arena A1C_LimitedArena_arena(A1C_LimitedArena* limitedArena);
+A1C_Arena A1C_LimitedArena_arena(A1C_LimitedArena *limitedArena);
 
 /// Reset the number of allocated bytes by the @p limitedArena.
 /// @warning This does not free any memory.
@@ -205,7 +202,6 @@ const A1C_Item *A1C_Map_get_int(const A1C_Map *map, A1C_Int64 key);
 const A1C_Item *A1C_Array_get(const A1C_Array *array, size_t index);
 
 bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b);
-bool A1C_Item_strictEq(const A1C_Item *a, const A1C_Item *b);
 
 ////////////////////////////////////////
 // Creation
@@ -213,7 +209,6 @@ bool A1C_Item_strictEq(const A1C_Item *a, const A1C_Item *b);
 
 A1C_Item *A1C_NODISCARD A1C_Item_root(A1C_Arena *arena);
 
-void A1C_Item_uint64(A1C_Item *item, A1C_UInt64 value);
 void A1C_Item_int64(A1C_Item *item, A1C_Int64 value);
 void A1C_Item_float16(A1C_Item *item, A1C_Float16 value);
 void A1C_Item_float32(A1C_Item *item, A1C_Float32 value);
@@ -221,7 +216,7 @@ void A1C_Item_float64(A1C_Item *item, A1C_Float64 value);
 void A1C_Item_boolean(A1C_Item *item, bool value);
 void A1C_Item_null(A1C_Item *item);
 void A1C_Item_undefined(A1C_Item *item);
-A1C_Tag *A1C_NODISCARD A1C_Item_tag(A1C_Item *item, A1C_UInt64 tag,
+A1C_Tag *A1C_NODISCARD A1C_Item_tag(A1C_Item *item, uint64_t tag,
                                     A1C_Arena *arena);
 uint8_t *A1C_NODISCARD A1C_Item_bytes(A1C_Item *item, size_t size,
                                       A1C_Arena *arena);
