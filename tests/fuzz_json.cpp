@@ -51,71 +51,69 @@ void fail(const char *message, const A1C_Item *item, A1C_Error error) {
   abort();
 }
 
-bool hasNonAscii(const nlohmann::json& a)
-{
-    if (a.is_string()) {
-        auto aStr = a.get<std::string>();
-        for (auto c : aStr) {
-            if (!isascii(c)) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if (a.is_array()) {
-        for (size_t i = 0; i < a.size(); ++i) {
-            if (hasNonAscii(a[i])) {
-                return true;
-            }
-        }
-        return false;
-    }
-    if (a.is_object()) {
-        for (const auto& it : a.items()) {
-            if (hasNonAscii(it.key()) || hasNonAscii(it.value())) {
-                return true;
-            }
-        }
-        return false;
+bool hasNonAscii(const nlohmann::json &a) {
+  if (a.is_string()) {
+    auto aStr = a.get<std::string>();
+    for (auto c : aStr) {
+      if (!isascii(c)) {
+        return true;
+      }
     }
     return false;
+  }
+  if (a.is_array()) {
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (hasNonAscii(a[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (a.is_object()) {
+    for (const auto &it : a.items()) {
+      if (hasNonAscii(it.key()) || hasNonAscii(it.value())) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
 }
-bool approxEq(const nlohmann::json& a, const nlohmann::json& b)
-{
-    if (a == b) {
-        return true;
+bool approxEq(const nlohmann::json &a, const nlohmann::json &b) {
+  if (a == b) {
+    return true;
+  }
+  if (a.is_number_float() && b.is_number()) {
+    return true;
+  }
+  if (a.is_number() && b.is_number_float()) {
+    return true;
+  }
+  if (a.is_array() && b.is_array()) {
+    if (a.size() != b.size()) {
+      return false;
     }
-    if (a.is_number_float() && b.is_number()) {
-        return true;
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (!approxEq(a[i], b[i])) {
+        return false;
+      }
     }
-    if (a.is_number() && b.is_number_float()) {
-        return true;
+    return true;
+  }
+  if (a.is_object() && b.is_object()) {
+    if (a.size() != b.size()) {
+      return false;
     }
-    if (a.is_array() && b.is_array()) {
-        if (a.size() != b.size()) {
-            return false;
-        }
-        for (size_t i = 0; i < a.size(); ++i) {
-            if (!approxEq(a[i], b[i])) {
-                return false;
-            }
-        }
-        return true;
+    for (const auto &it : a.items()) {
+      auto jt = b.find(it.key());
+      if (jt == b.end() || !approxEq(it.value(), jt.value())) {
+        // Key not found or values do not match
+        return false;
+      }
     }
-    if (a.is_object() && b.is_object()) {
-        if (a.size() != b.size()) {
-            return false;
-        }
-        for (const auto& it : a.items()) {
-            auto jt = b.find(it.key());
-            if (jt == b.end() || !approxEq(it.value(), jt.value())) {
-                // Key not found or values do not match
-                return false;
-            }
-        }
-        return true;
-    }
-    return false;
+    return true;
+  }
+  return false;
 }
 
 // Sanitize floating point values, because they will differ
@@ -194,17 +192,24 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
   str.clear();
   if (!A1C_Encoder_json(&encoder, item)) {
-    fail("JSON encoding failed!", item, encoder.error);
-  }
-
-  if (hasNonAscii(json)) {
-    // JSON printing is for debugging, we don't get unicode right
-    return 0;
+    if (encoder.error.type == A1C_ErrorType_jsonUTF8Unsupported) {
+      if (!hasNonAscii(json)) {
+        fail("JSON encoding failed due to UTF8 unsupported but no non-ascii "
+             "found",
+             item, encoder.error);
+      }
+    } else {
+      fail("JSON encoding failed!", item, encoder.error);
+    }
   }
 
   auto json3 = nlohmann::json::parse(str.begin(), str.end(), nullptr, false);
 
   if (json3.is_discarded() || !approxEq(json, json3)) {
+    if (hasNonAscii(json)) {
+        // JSON printing is for debugging, we don't get unicode right
+        return 0;
+    }
     fprintf(stderr, "Original JSON: %s\n", json.dump(2).c_str());
     fprintf(stderr, "String JSON:   %s\n", str.c_str());
     fprintf(stderr, "RoundTrip JSON: %s\n", json3.dump(2).c_str());

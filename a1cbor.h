@@ -127,6 +127,7 @@ typedef enum {
   A1C_ErrorType_invalidSimpleValue,
   A1C_ErrorType_formatError,
   A1C_ErrorType_trailingData,
+  A1C_ErrorType_jsonUTF8Unsupported,
 } A1C_ErrorType;
 
 typedef struct {

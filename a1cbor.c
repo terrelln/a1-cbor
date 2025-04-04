@@ -177,6 +177,8 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
     return "formatError";
   case A1C_ErrorType_trailingData:
     return "trailingData";
+  case A1C_ErrorType_jsonUTF8Unsupported:
+    return "jsonUTF8Unsupported";
   }
 }
 
@@ -1396,6 +1398,9 @@ static bool A1C_NODISCARD A1C_Encoder_jsonString(A1C_Encoder *encoder,
   A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '"'));
   for (size_t i = 0; i < item->string.size; ++i) {
     const char c = item->string.data[i];
+    if ((uint8_t)c >= 0x80) {
+      return A1C_Encoder_error(encoder, A1C_ErrorType_jsonUTF8Unsupported);
+    }
     if (c == '"') {
       A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, "\\\""));
     } else if (c == '\\') {
