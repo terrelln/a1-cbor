@@ -9,6 +9,10 @@
 extern "C" {
 #endif
 
+////////////////////////////////////////
+// Portability
+////////////////////////////////////////
+
 #ifdef __has_attribute
 #define A1C_HAS_ATTRIBUTE(x) __has_attribute(x)
 #else
@@ -21,25 +25,9 @@ extern "C" {
 #define A1C_NODISCARD
 #endif
 
-typedef struct {
-  /// Allocates and zeros memory of the given size. The memory must outlive any
-  /// objects created by the library using this arena.
-  /// @returns NULL on failure.
-  void *(*calloc)(void *opaque, size_t bytes);
-  /// Opaque pointer passed to alloc and calloc.
-  void *opaque;
-} A1C_Arena;
-
-typedef struct {
-  A1C_Arena backingArena;
-  size_t allocatedBytes;
-  size_t limitBytes;
-} A1C_LimitedArena;
-
-void *A1C_LimitedArena_calloc(void *opaque, size_t bytes);
-A1C_LimitedArena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes);
-A1C_Arena A1C_LimitedArena_arena(A1C_LimitedArena* limitedArena);
-void A1C_LimitedArena_reset(A1C_LimitedArena *limitedArena);
+////////////////////////////////////////
+// Item
+////////////////////////////////////////
 
 typedef enum {
   A1C_ItemType_invalid = 0,
@@ -146,6 +134,38 @@ typedef struct {
 } A1C_Error;
 
 const char *A1C_ErrorType_getString(A1C_ErrorType type);
+
+////////////////////////////////////////
+// Arena
+////////////////////////////////////////
+
+typedef struct {
+  /// Allocates and zeros memory of the given size. The memory must outlive any
+  /// objects created by the library using this arena.
+  /// @returns NULL on failure.
+  void *(*calloc)(void *opaque, size_t bytes);
+  /// Opaque pointer passed to alloc and calloc.
+  void *opaque;
+} A1C_Arena;
+
+/// Arena wrapper that limits the number of bytes allocated.
+typedef struct {
+  A1C_Arena backingArena;
+  size_t allocatedBytes;
+  size_t limitBytes;
+} A1C_LimitedArena;
+
+/**
+ * Creates a limited arena that won't allocate more than @p limitBytes.
+ */
+A1C_LimitedArena A1C_LimitedArena_init(A1C_Arena arena, size_t limitBytes);
+
+/// Get an arena interface for the @p limitedArena.
+A1C_Arena A1C_LimitedArena_arena(A1C_LimitedArena* limitedArena);
+
+/// Reset the number of allocated bytes by the @p limitedArena.
+/// @warning This does not free any memory.
+void A1C_LimitedArena_reset(A1C_LimitedArena *limitedArena);
 
 ////////////////////////////////////////
 // Decoder

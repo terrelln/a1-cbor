@@ -15,3 +15,7 @@ asan-test: CFLAGS += -fsanitize=address,undefined -g -O3
 asan-test: CXXFLAGS += -fsanitize=address,undefined -g -O3
 asan-test: LDFLAGS += -fsanitize=address,undefined -fuse-ld=lld
 asan-test: test
+
+.PHONY:
+fallback-test: CFLAGS += -DA1C_TEST_FALLBACK
+fallback-test: asan-test

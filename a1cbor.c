@@ -13,23 +13,18 @@
 static char *A1C_gEmptyString = "";
 
 ////////////////////////////////////////
-// Utilities
+// Portability
 ////////////////////////////////////////
 
-#define A1C_RET_IF_ERR(ret)                                                    \
-  do {                                                                         \
-    if (!(ret)) {                                                              \
-      return 0;                                                                \
-    }                                                                          \
-  } while (0)
-
-#if defined(A1C_TEST_FALLBACK) || !defined(__has_builtin)
-#define __has_builtin(x) 0
+#if defined(__has_builtin) && !defined(A1C_TEST_FALLBACK)
+#define A1C_HAS_BUILTIN(x) __has_builtin(x)
+#else
+#define A1C_HAS_BUILTIN(x) 0
 #endif
 
 /// @returns true on overflow.
 static bool A1C_NODISCARD A1C_overflowAdd(size_t x, size_t y, size_t *result) {
-#if __has_builtin(__builtin_add_overflow)
+#if A1C_HAS_BUILTIN(__builtin_add_overflow)
   return __builtin_add_overflow(x, y, result);
 #else
   *result = x + y;
@@ -38,12 +33,11 @@ static bool A1C_NODISCARD A1C_overflowAdd(size_t x, size_t y, size_t *result) {
   } else {
     return false;
   }
-  return A1C_overflowAdd_fallback(x, y, result);
 #endif
 }
 
 static bool A1C_NODISCARD A1C_overflowMul(size_t x, size_t y, size_t *result) {
-#if __has_builtin(__builtin_mul_overflow)
+#if A1C_HAS_BUILTIN(__builtin_mul_overflow)
   return __builtin_mul_overflow(x, y, result);
 #else
   *result = x * y;
@@ -55,8 +49,8 @@ static bool A1C_NODISCARD A1C_overflowMul(size_t x, size_t y, size_t *result) {
 #endif
 }
 
-#if !__has_builtin(__builtin_bswap16) || !__has_builtin(__builtin_bswap32) ||  \
-    !__has_builtin(__builtin_bswap64)
+#if !A1C_HAS_BUILTIN(__builtin_bswap16) ||                                     \
+    !A1C_HAS_BUILTIN(__builtin_bswap32) || !A1C_HAS_BUILTIN(__builtin_bswap64)
 static void A1C_byteswap_fallback(void *value, size_t size) {
   assert(size == 2 || size == 4 || size == 8);
   uint8_t *first = (uint8_t *)value;
@@ -72,7 +66,7 @@ static void A1C_byteswap_fallback(void *value, size_t size) {
 #endif
 
 static uint16_t A1C_byteswap16(uint16_t value) {
-#if __has_builtin(__builtin_bswap16)
+#if A1C_HAS_BUILTIN(__builtin_bswap16)
   return __builtin_bswap16(value);
 #else
   A1C_byteswap_fallback(&value, sizeof(value));
@@ -81,7 +75,7 @@ static uint16_t A1C_byteswap16(uint16_t value) {
 }
 
 static uint32_t A1C_byteswap32(uint32_t value) {
-#if __has_builtin(__builtin_bswap32)
+#if A1C_HAS_BUILTIN(__builtin_bswap32)
   return __builtin_bswap32(value);
 #else
   A1C_byteswap_fallback(&value, sizeof(value));
@@ -90,13 +84,58 @@ static uint32_t A1C_byteswap32(uint32_t value) {
 }
 
 static uint64_t A1C_byteswap64(uint64_t value) {
-#if __has_builtin(__builtin_bswap64)
+#if A1C_HAS_BUILTIN(__builtin_bswap64)
   return __builtin_bswap64(value);
 #else
   A1C_byteswap_fallback(&value, sizeof(value));
   return value;
 #endif
 }
+
+static bool A1C_isLittleEndian(void)
+{
+    const union {
+        uint32_t u;
+        uint8_t c[4];
+    } one = { 1 };
+    return one.c[0];
+}
+
+static uint16_t A1C_bigEndian16(uint16_t value) {
+  if (A1C_isLittleEndian()) {
+    return A1C_byteswap16(value);
+  } else {
+    return value;
+  }
+}
+
+static uint32_t A1C_bigEndian32(uint32_t value) {
+  if (A1C_isLittleEndian()) {
+    return A1C_byteswap32(value);
+  } else {
+    return value;
+  }
+}
+
+static uint64_t A1C_bigEndian64(uint64_t value) {
+  if (A1C_isLittleEndian()) {
+    return A1C_byteswap64(value);
+  } else {
+    return value;
+  }
+}
+
+////////////////////////////////////////
+// Utilities
+////////////////////////////////////////
+
+#define A1C_RET_IF_ERR(ret)                                                    \
+  do {                                                                         \
+    if (!(ret)) {                                                              \
+      return 0;                                                                \
+    }                                                                          \
+  } while (0)
+
 
 const char A1C_kBase64Map[] = {
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
@@ -197,7 +236,7 @@ static void *A1C_Arena_calloc(A1C_Arena *arena, size_t count, size_t size) {
   return arena->calloc(arena->opaque, bytes);
 }
 
-void *A1C_LimitedArena_calloc(void *opaque, size_t bytes) {
+static void *A1C_LimitedArena_calloc(void *opaque, size_t bytes) {
   A1C_LimitedArena *arena = (A1C_LimitedArena *)opaque;
   if (arena == NULL) {
     return NULL;
@@ -671,15 +710,15 @@ bool A1C_NODISCARD A1C_Decoder_readCount(A1C_Decoder *decoder,
   } else if (shortCount == 25) {
     uint16_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
-    *out = A1C_byteswap16(value);
+    *out = A1C_bigEndian16(value);
   } else if (shortCount == 26) {
     uint32_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
-    *out = A1C_byteswap32(value);
+    *out = A1C_bigEndian32(value);
   } else if (shortCount == 27) {
     uint64_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
-    *out = A1C_byteswap64(value);
+    *out = A1C_bigEndian64(value);
   } else {
     assert(false);
   }
@@ -982,19 +1021,19 @@ static bool A1C_NODISCARD A1C_Decoder_decodeSpecial(A1C_Decoder *decoder,
   } else if (shortCount == 25) {
     uint16_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
-    value = A1C_byteswap16(value);
+    value = A1C_bigEndian16(value);
     A1C_Item_float16(item, value);
   } else if (shortCount == 26) {
     uint32_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
-    value = A1C_byteswap32(value);
+    value = A1C_bigEndian32(value);
     float float32;
     memcpy(&float32, &value, sizeof(float32));
     A1C_Item_float32(item, float32);
   } else if (shortCount == 27) {
     uint64_t value;
     A1C_RET_IF_ERR(A1C_Decoder_read(decoder, &value, sizeof(value)));
-    value = A1C_byteswap64(value);
+    value = A1C_bigEndian64(value);
     double float64;
     memcpy(&float64, &value, sizeof(float64));
     A1C_Item_float64(item, float64);
@@ -1161,13 +1200,13 @@ static bool A1C_NODISCARD A1C_Encoder_encodeHeaderAndCount(
     uint8_t count8 = (uint8_t)count;
     return A1C_Encoder_write(encoder, &count8, sizeof(count8));
   } else if (shortCount == 25) {
-    uint16_t count16 = A1C_byteswap16((uint16_t)count);
+    uint16_t count16 = A1C_bigEndian16((uint16_t)count);
     return A1C_Encoder_write(encoder, &count16, sizeof(count16));
   } else if (shortCount == 26) {
-    uint32_t count32 = A1C_byteswap32((uint32_t)count);
+    uint32_t count32 = A1C_bigEndian32((uint32_t)count);
     return A1C_Encoder_write(encoder, &count32, sizeof(count32));
   } else if (shortCount == 27) {
-    uint64_t count64 = A1C_byteswap64((uint64_t)count);
+    uint64_t count64 = A1C_bigEndian64((uint64_t)count);
     return A1C_Encoder_write(encoder, &count64, sizeof(count64));
   }
   return true;
@@ -1273,21 +1312,21 @@ static bool A1C_NODISCARD A1C_Encoder_encodeSpecial(A1C_Encoder *encoder,
   } else if (item->type == A1C_ItemType_float16) {
     A1C_ItemHeader header = A1C_ItemHeader_make(A1C_MajorType_special, 25);
     A1C_RET_IF_ERR(A1C_Encoder_write(encoder, &header, sizeof(header)));
-    const uint16_t value = A1C_byteswap16(item->float16);
+    const uint16_t value = A1C_bigEndian16(item->float16);
     return A1C_Encoder_write(encoder, &value, sizeof(value));
   } else if (item->type == A1C_ItemType_float32) {
     A1C_ItemHeader header = A1C_ItemHeader_make(A1C_MajorType_special, 26);
     A1C_RET_IF_ERR(A1C_Encoder_write(encoder, &header, sizeof(header)));
     uint32_t value;
     memcpy(&value, &item->float32, sizeof(item->float32));
-    value = A1C_byteswap32(value);
+    value = A1C_bigEndian32(value);
     return A1C_Encoder_write(encoder, &value, sizeof(value));
   } else if (item->type == A1C_ItemType_float64) {
     A1C_ItemHeader header = A1C_ItemHeader_make(A1C_MajorType_special, 27);
     A1C_RET_IF_ERR(A1C_Encoder_write(encoder, &header, sizeof(header)));
     uint64_t value;
     memcpy(&value, &item->float64, sizeof(item->float64));
-    value = A1C_byteswap64(value);
+    value = A1C_bigEndian64(value);
     return A1C_Encoder_write(encoder, &value, sizeof(value));
   } else {
     assert(false);
@@ -1337,6 +1376,10 @@ bool A1C_Encoder_encode(A1C_Encoder *encoder, const A1C_Item *item) {
   A1C_Encoder_reset(encoder);
   return A1C_Encoder_encodeOne(encoder, item);
 }
+
+////////////////////////////////////////
+// Encoder JSON
+////////////////////////////////////////
 
 static bool A1C_Encoder_jsonOne(A1C_Encoder *encoder, const A1C_Item *item);
 
