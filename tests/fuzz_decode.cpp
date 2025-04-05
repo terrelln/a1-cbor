@@ -80,15 +80,15 @@ bool equal(const A1C_Item *a, const cbor_item_t *b) {
   switch (a->type) {
   case A1C_ItemType_int64:
     if (a->int64 >= 0) {
-        if (!cbor_isa_uint(b)) {
+      if (!cbor_isa_uint(b)) {
         return false;
-        }
-        return a->int64 == cbor_get_int(b);
+      }
+      return a->int64 == cbor_get_int(b);
     } else {
-        if (!cbor_isa_negint(b)) {
+      if (!cbor_isa_negint(b)) {
         return false;
-        }
-        return a->int64 == (int64_t)~cbor_get_int(b);
+      }
+      return a->int64 == (int64_t)~cbor_get_int(b);
     }
   case A1C_ItemType_float16:
     if (!cbor_is_float(b) || cbor_float_get_width(b) != CBOR_FLOAT_16) {
@@ -234,8 +234,6 @@ bool equal(const A1C_Item *a, const cbor_item_t *b) {
       return false;
     }
     return equal(a->tag.item, cbor_tag_item(b));
-  case A1C_ItemType_invalid:
-    return false;
   }
 }
 } // namespace
@@ -255,7 +253,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   memcpy(&limit, data + size - 4, sizeof(limit));
   size -= 4;
   A1C_Decoder decoder;
-  A1C_Decoder_init(&decoder, arena, 0, referenceSource);
+  A1C_Decoder_init(&decoder, arena, {.referenceSource = referenceSource});
 
   auto item = A1C_Decoder_decode(&decoder, data, size);
 
@@ -264,7 +262,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     A1C_Decoder decoder2;
     auto arena2 = arena;
     arena2.opaque = &ptrs2;
-    A1C_Decoder_init(&decoder2, arena2, limit, referenceSource);
+    A1C_Decoder_init(&decoder2, arena2,
+                     {.limitBytes = limit, .referenceSource = referenceSource});
     auto item2 = A1C_Decoder_decode(&decoder2, data, size);
     if (ptrs2.first > limit) {
       fail("Allocation limit not respected", item2, decoder2.error);

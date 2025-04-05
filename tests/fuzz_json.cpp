@@ -128,8 +128,6 @@ void sanitize(A1C_Item *item) {
   case A1C_ItemType_bytes:
   case A1C_ItemType_string:
   case A1C_ItemType_tag:
-  case A1C_ItemType_invalid:
-    return;
   case A1C_ItemType_float32:
     item->float32 = int64_t(item->float32);
     return;
@@ -166,7 +164,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   arena.calloc = testCalloc;
   arena.opaque = &ptrs;
   A1C_Decoder decoder;
-  A1C_Decoder_init(&decoder, arena, 0, 0);
+  A1C_Decoder_init(&decoder, arena, { });
 
   auto item = A1C_Decoder_decode(&decoder, cbor.data(), cbor.size());
 

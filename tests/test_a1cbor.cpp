@@ -92,7 +92,8 @@ protected:
   A1C_Item *decode(const std::string &data, size_t limit = 0,
                    bool referenceSource = false) {
     A1C_Decoder decoder;
-    A1C_Decoder_init(&decoder, arena, limit, referenceSource);
+    A1C_Decoder_init(&decoder, arena,
+                     {.limitBytes = limit, .referenceSource = referenceSource});
     A1C_Item *item = A1C_Decoder_decode(
         &decoder, reinterpret_cast<const uint8_t *>(data.data()), data.size());
     if (item == nullptr) {
@@ -104,7 +105,8 @@ protected:
   A1C_Item *decode(const std::vector<uint8_t> &data, size_t limit = 0,
                    bool referenceSource = false) {
     A1C_Decoder decoder;
-    A1C_Decoder_init(&decoder, arena, limit, referenceSource);
+    A1C_Decoder_init(&decoder, arena,
+                     {.limitBytes = limit, .referenceSource = referenceSource});
     A1C_Item *item = A1C_Decoder_decode(&decoder, data.data(), data.size());
     if (item == nullptr) {
       throw std::runtime_error{printError("Decoding failed", decoder.error)};
@@ -297,15 +299,15 @@ TEST_F(A1CBorTest, Tag) {
     auto item = A1C_Item_root(&arena);
     ASSERT_NE(item, nullptr);
 
-    auto tag = A1C_Item_tag(item, value, &arena);
-    ASSERT_NE(tag, nullptr);
+    auto child = A1C_Item_tag(item, value, &arena);
+    ASSERT_NE(child, nullptr);
     ASSERT_EQ(item->type, A1C_ItemType_tag);
-    ASSERT_EQ(tag->tag, value);
-    ASSERT_NE(tag->item, nullptr);
-    ASSERT_EQ(tag->item->parent, item);
+    ASSERT_EQ(item->tag.tag, value);
+    ASSERT_EQ(item->tag.item, child);
+    ASSERT_EQ(child->parent, item);
     ASSERT_EQ(item->parent, nullptr);
 
-    A1C_Item_null(tag->item);
+    A1C_Item_null(child);
 
     auto encoded = encode(item);
     auto decoded = decode(encoded);
@@ -318,27 +320,27 @@ TEST_F(A1CBorTest, Tag) {
     {
       auto item1 = A1C_Item_root(&arena);
       ASSERT_NE(item1, nullptr);
-      auto tag1 = A1C_Item_tag(item1, 1, &arena);
-      ASSERT_NE(tag1, nullptr);
-      A1C_Item_null(tag1->item);
+      auto child1 = A1C_Item_tag(item1, 1, &arena);
+      ASSERT_NE(child1, nullptr);
+      A1C_Item_null(child1);
       auto item2 = A1C_Item_root(&arena);
       ASSERT_NE(item2, nullptr);
-      auto tag2 = A1C_Item_tag(item2, 2, &arena);
-      ASSERT_NE(tag2, nullptr);
-      A1C_Item_null(tag2->item);
+      auto child2 = A1C_Item_tag(item2, 2, &arena);
+      ASSERT_NE(child2, nullptr);
+      A1C_Item_null(child2);
       ASSERT_NE(*item1, *item2);
     }
     {
       auto item1 = A1C_Item_root(&arena);
       ASSERT_NE(item1, nullptr);
-      auto tag1 = A1C_Item_tag(item1, 1, &arena);
-      ASSERT_NE(tag1, nullptr);
-      A1C_Item_null(tag1->item);
+      auto child1 = A1C_Item_tag(item1, 1, &arena);
+      ASSERT_NE(child1, nullptr);
+      A1C_Item_null(child1);
       auto item2 = A1C_Item_root(&arena);
       ASSERT_NE(item2, nullptr);
-      auto tag2 = A1C_Item_tag(item2, 1, &arena);
-      ASSERT_NE(tag2, nullptr);
-      A1C_Item_undefined(tag2->item);
+      auto child2 = A1C_Item_tag(item2, 1, &arena);
+      ASSERT_NE(child2, nullptr);
+      A1C_Item_undefined(child2);
       ASSERT_NE(*item1, *item2);
     }
   };
@@ -662,7 +664,7 @@ TEST_F(A1CBorTest, DeeplyNested) {
   for (size_t i = 0; i < depth - 1; ++i) {
     auto tag = A1C_Item_tag(current, i, &arena);
     ASSERT_NE(tag, nullptr);
-    current = tag->item;
+    current = tag;
   }
   A1C_Item_null(current);
 
@@ -673,12 +675,12 @@ TEST_F(A1CBorTest, DeeplyNested) {
 
   auto tag = A1C_Item_tag(current, 100, &arena);
   ASSERT_NE(tag, nullptr);
-  A1C_Item_null(tag->item);
+  A1C_Item_null(tag);
 
   encoded = encode(item);
 
   A1C_Decoder decoder;
-  A1C_Decoder_init(&decoder, arena, 0, false);
+  A1C_Decoder_init(&decoder, arena, {});
   ASSERT_EQ(A1C_Decoder_decode(
                 &decoder, reinterpret_cast<const uint8_t *>(encoded.data()),
                 encoded.size()),
@@ -745,7 +747,7 @@ TEST_F(A1CBorTest, Json) {
   ASSERT_NE(A1C_Item_map(array->items + 10, 0, &arena), nullptr);
   auto tag = A1C_Item_tag(array->items + 11, 100, &arena);
   ASSERT_NE(tag, nullptr);
-  A1C_Item_boolean(tag->item, true);
+  A1C_Item_boolean(tag, true);
   array->items[12].type = A1C_ItemType_simple;
   array->items[12].simple = 42;
   array = A1C_Item_array(array->items + 13, 5, &arena);

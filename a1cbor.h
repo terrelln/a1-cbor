@@ -29,8 +29,13 @@ extern "C" {
 // Item
 ////////////////////////////////////////
 
+/**
+ * The possible types of an A1C_Item.
+ * If there is data associated with the type, it will be in the union with the
+ * same name as the type.
+ */
 typedef enum {
-  A1C_ItemType_invalid = 0,
+  A1C_ItemType_undefined = 0,
   A1C_ItemType_int64,
   A1C_ItemType_bytes,
   A1C_ItemType_string,
@@ -38,7 +43,6 @@ typedef enum {
   A1C_ItemType_map,
   A1C_ItemType_boolean,
   A1C_ItemType_null,
-  A1C_ItemType_undefined,
   A1C_ItemType_float16,
   A1C_ItemType_float32,
   A1C_ItemType_float64,
@@ -48,6 +52,7 @@ typedef enum {
 
 typedef int64_t A1C_Int64;
 typedef bool A1C_Bool;
+/// @note Float16 is only supported by returning a 16-bit container.
 typedef uint16_t A1C_Float16;
 typedef double A1C_Float64;
 typedef float A1C_Float32;
@@ -80,6 +85,16 @@ typedef struct {
 
 typedef uint8_t A1C_Simple;
 
+/**
+ * A1C_Item is the main structure used to represent a single CBOR item.
+ *
+ * The type of the item is indicated by `type`. The actual data is stored in
+ * a union of the same name as the type. For example, if `type` is
+ * `A1C_ItemType_int64`, then the actual integer value can be found in `int64`.
+ *
+ * The `parent` field is used to track the parent of the item in the tree, and
+ * is NULL for the root item.
+ */
 typedef struct A1C_Item {
   A1C_ItemType type;
   union {
@@ -114,7 +129,6 @@ typedef enum {
   A1C_ErrorType_invalidSimpleEncoding,
   A1C_ErrorType_breakNotAllowed,
   A1C_ErrorType_writeFailed,
-  A1C_ErrorType_invalidItemType,
   A1C_ErrorType_invalidSimpleValue,
   A1C_ErrorType_formatError,
   A1C_ErrorType_trailingData,
@@ -122,14 +136,23 @@ typedef enum {
 } A1C_ErrorType;
 
 typedef struct {
+  /// Error type.
   A1C_ErrorType type;
+  /// The position within the encoded data where the error occurred.
   size_t srcPos;
+  /// The depth at the time the error occurred.
   size_t depth;
+  /// Decoding: The parent item of the item being decoded when the error
+  /// occurred.
+  /// Encoding: The item being encoded when the error occurred.
   const A1C_Item *item;
+  /// The file where the error was reported.
   const char *file;
+  /// The line where the error was reported.
   int line;
 } A1C_Error;
 
+/// @returns A string representation of the error type.
 const char *A1C_ErrorType_getString(A1C_ErrorType type);
 
 ////////////////////////////////////////
@@ -171,6 +194,36 @@ void A1C_LimitedArena_reset(A1C_LimitedArena *limitedArena);
 #define A1C_MAX_DEPTH_DEFAULT 32
 
 typedef struct {
+  /**
+   * Maximum recursion depth allowed.
+   *
+   * Default (0) means use `A1C_MAX_DEPTH_DEFAULT`.
+   */
+  size_t maxDepth;
+  /**
+   * Limit the maximum number of bytes allocated by the decoder in a single
+   * call to A1C_Decode_decode().
+   *
+   * Default (0) means unlimited.
+   *
+   * Unless the limit is lower, the maximum memory usage when decoding a source
+   * of N bytes is sizeof(A1C_Item) * N. The decoder will NEVER allocate more
+   * memory than this.
+   */
+  size_t limitBytes;
+  /**
+   * If true, the decoder will reference the original source for bytes and
+   * strings, rather than copy the buffer into the arena.
+   */
+  bool referenceSource;
+  /**
+   * If true, the decoder will allow simple values with unknown types.
+   * Otherwise A1C_ItemType_simple will not be used.
+   */
+  bool rejectUnknownSimple;
+} A1C_DecoderConfig;
+
+typedef struct {
   A1C_LimitedArena limitedArena;
   A1C_Arena arena;
 
@@ -185,54 +238,169 @@ typedef struct {
   bool rejectUnknownSimple;
 } A1C_Decoder;
 
-void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena, size_t limitBytes,
-                      bool referenceSource);
+/**
+ * Initializes a decoder that allocates its A1C_Item objects in @p arena.
+ * @note It is safe to free all memory allocated by the decoder once the
+ * A1C_Item* allocated in the arena are no longer needed. The Decoder can
+ * continue to be used.
+ */
+void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena,
+                      A1C_DecoderConfig config);
 
+/**
+ * Decodes the CBOR encoded value in [data, data + size) into an A1C_Item.
+ * Trailing bytes are not allowed. This function supports the full CBOR spec,
+ * except that integers which do not fit in an int64_t are not supported.
+ *
+ * @note The memory usage of the decoder is at most sizeof(A1C_Item) * size,
+ * unless the `limitBytes` configuration is lower.
+ *
+ * @returns The decoded item on success, or NULL on failure. Upon failure,
+ * A1C_Decoder_getError() can be used to retrieve the error information.
+ */
 A1C_Item *A1C_NODISCARD A1C_Decoder_decode(A1C_Decoder *decoder,
                                            const uint8_t *data, size_t size);
+
+/**
+ * @returns The error information from the last decode operation.
+ */
+A1C_Error A1C_Decoder_getError(const A1C_Decoder *decoder);
 
 ////////////////////////////////////////
 // Item Helpers
 ////////////////////////////////////////
 
+/**
+ * @returns The value in the map with the key @p key or NULL if the key is not
+ * found.
+ */
 const A1C_Item *A1C_Map_get(const A1C_Map *map, const A1C_Item *key);
+/// @returns The value in the map with the key @p key or NULL if the key is not
+/// found.
 const A1C_Item *A1C_Map_get_cstr(const A1C_Map *map, const char *key);
+/// @returns The value in the map with the key @p key or NULL if the key is not
+/// found.
 const A1C_Item *A1C_Map_get_int(const A1C_Map *map, A1C_Int64 key);
 
+/// @returns The item at index @p i in the array @p array, or NULL if @p i is
+/// out of bounds.
 const A1C_Item *A1C_Array_get(const A1C_Array *array, size_t index);
 
+/// @returns true if @p a and @p b are equal
 bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b);
 
 ////////////////////////////////////////
 // Creation
 ////////////////////////////////////////
 
+/// @returns The root A1C_Item allocated in the given arena or NULL if the
+/// allocation failed. The item defaults to `A1C_ItemType_undefined`.
 A1C_Item *A1C_NODISCARD A1C_Item_root(A1C_Arena *arena);
 
+/// Fills @p item with @p value and sets the type
 void A1C_Item_int64(A1C_Item *item, A1C_Int64 value);
+
+/// Fills @p item with @p value and sets the type
 void A1C_Item_float16(A1C_Item *item, A1C_Float16 value);
+
+/// Fills @p item with @p value and sets the type
 void A1C_Item_float32(A1C_Item *item, A1C_Float32 value);
+
+/// Fills @p item with @p value and sets the type
 void A1C_Item_float64(A1C_Item *item, A1C_Float64 value);
+
+/// Fills @p item with @p value and sets the type
 void A1C_Item_boolean(A1C_Item *item, bool value);
+
+/// Sets the type of @p item to null
 void A1C_Item_null(A1C_Item *item);
+
+/// Sets the type of @p item to undefined
 void A1C_Item_undefined(A1C_Item *item);
-A1C_Tag *A1C_NODISCARD A1C_Item_tag(A1C_Item *item, uint64_t tag,
-                                    A1C_Arena *arena);
+
+/**
+ * Sets @p item to the tag type with the tag @p tag and allocates
+ * a child item in the arena.
+ *
+ * @returns The child item or NULL on allocation failure.
+ */
+A1C_Item *A1C_NODISCARD A1C_Item_tag(A1C_Item *item, uint64_t tag,
+                                     A1C_Arena *arena);
+
+/**
+ * Sets @p item to the bytes type with the size @p size and allocates
+ * a buffer in the arena.
+ *
+ * @returns The allocated buffer on success or NULL on allocation failure.
+ */
 uint8_t *A1C_NODISCARD A1C_Item_bytes(A1C_Item *item, size_t size,
                                       A1C_Arena *arena);
+
+/**
+ * Sets @p item to the bytes type with the given data and size, allocating
+ * a buffer in the arena.
+ *
+ * @returns True on success, false on allocation failure.
+ */
 bool A1C_NODISCARD A1C_Item_bytes_copy(A1C_Item *item, const uint8_t *data,
                                        size_t size, A1C_Arena *arena);
+
+/**
+ * Sets @p item to the bytes type with the given data and size, referencing
+ * the original source.
+ */
 void A1C_Item_bytes_ref(A1C_Item *item, const uint8_t *data, size_t size);
+
+/**
+ * Sets @p item to the string type with the size @p size and allocates
+ * a buffer in the arena.
+ *
+ * @returns The allocated string on success or NULL on allocation failure.
+ */
 char *A1C_NODISCARD A1C_Item_string(A1C_Item *item, size_t size,
                                     A1C_Arena *arena);
+
+/**
+ * Sets @p item to the string type with the given data and size, allocating
+ * a buffer in the arena.
+ *
+ * @returns True on success, false on allocation failure.
+ */
 bool A1C_NODISCARD A1C_Item_string_copy(A1C_Item *item, const char *data,
                                         size_t size, A1C_Arena *arena);
+
+/**
+ * Equivalent to `A1C_Item_string_copy(item, data, strlen(data), arena)`.
+ */
 bool A1C_NODISCARD A1C_Item_string_cstr(A1C_Item *item, const char *data,
                                         A1C_Arena *arena);
+
+/**
+ * Sets @p item to the string type with the given data and size, referencing
+ * the original source.
+ */
 void A1C_Item_string_ref(A1C_Item *item, const char *data, size_t size);
+
+/**
+ * Equivalent to `A1C_Item_string_ref(item, data, strlen(data))`.
+ */
 void A1C_Item_string_refCStr(A1C_Item *item, const char *data);
+
+/**
+ * Creates a map in the given @p item of size @p size, allocating the keys and
+ * values in the provided @p arena.
+ *
+ * @returns The map member, or NULL on allocation failure.
+ */
 A1C_Map *A1C_NODISCARD A1C_Item_map(A1C_Item *item, size_t size,
                                     A1C_Arena *arena);
+
+/**
+ * Creates an array in the given @p item of size @p size, allocating the items
+ * in the provided @p arena.
+ *
+ * @returns The array member, or NULL on allocation failure.
+ */
 A1C_Array *A1C_NODISCARD A1C_Item_array(A1C_Item *item, size_t size,
                                         A1C_Arena *arena);
 
@@ -252,20 +420,66 @@ typedef struct {
   size_t depth;
 } A1C_Encoder;
 
+/**
+ * Initializes an encoder for encoding CBOR.
+ *
+ * @param encoder The encoder to initialize.
+ * @param write The callback to use for writing encoded bytes. It must try to
+ *              write [data, size) and return the number of bytes written.
+ *              Errors are reported by returning less than size.
+ * @param opaque Opaque pointer passed to the write callback.
+ */
 void A1C_Encoder_init(A1C_Encoder *encoder, A1C_Encoder_WriteCallback write,
                       void *opaque);
 
+/**
+ * Encodes a single A1C_Item into CBOR.
+ *
+ * @returns True on success and false on error. If the encoding fails, the error
+ * information can be retrieved from A1C_Encoder_getError().
+ */
 bool A1C_NODISCARD A1C_Encoder_encode(A1C_Encoder *encoder,
                                       const A1C_Item *item);
 
-/// @warning Fails on non-ascii strings
+/**
+ * Encodes a single A1C_Item into JSON format. If the CBOR is using non-JSON
+ * features, like numeric keys, then this will return invalid JSON. If the CBOR
+ * uses only JSON compatible features, it will return valid JSON.
+ *
+ * Limitations:
+ * - Fails on non-ascii strings (UTF-8)
+ * - Bytes are base64 encoded
+ * - Floating point values are not losslessly encoded in all cases
+ * - Tags, float16, and simple types are encoded as objects with the "type" key
+ *   denoting the type
+ *
+ * @returns True on success and false on error. If the encoding fails, the error
+ * information can be retrieved from A1C_Encoder_getError().
+ */
 bool A1C_NODISCARD A1C_Encoder_json(A1C_Encoder *encoder, const A1C_Item *item);
+
+/**
+ * @returns The error information from the last encoding operation.
+ */
+A1C_Error A1C_Encoder_getError(const A1C_Encoder *encoder);
 
 ////////////////////////////////////////
 // Simple Encoder
 ////////////////////////////////////////
 
+/// @returns The exact encoded size of @p item
+/// @note This requires a full pass over @p item
 size_t A1C_NODISCARD A1C_Item_encodedSize(const A1C_Item *item);
+
+/**
+ * Encodes @p item into [dst, dst + dstCapacity) and returns the number of bytes
+ * written or 0 on error.
+ *
+ * @param[out] error If an error occurs, this will be filled in with the error
+ * information. If you do not care about the error info, pass NULL.
+ *
+ * @returns The number of bytes written to @p dst on success, or 0 on failure.
+ */
 size_t A1C_NODISCARD A1C_Item_encode(const A1C_Item *item, uint8_t *dst,
                                      size_t dstCapacity, A1C_Error *error);
 

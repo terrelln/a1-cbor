@@ -206,8 +206,6 @@ const char *A1C_ErrorType_getString(A1C_ErrorType type) {
     return "breakNotAllowed";
   case A1C_ErrorType_writeFailed:
     return "writeFailed";
-  case A1C_ErrorType_invalidItemType:
-    return "invalidItemType";
   case A1C_ErrorType_invalidSimpleValue:
     return "invalidSimpleValue";
   case A1C_ErrorType_formatError:
@@ -339,8 +337,6 @@ bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b) {
                             b->map.size);
   case A1C_ItemType_tag:
     return a->tag.tag == b->tag.tag && A1C_Item_eq(a->tag.item, b->tag.item);
-  case A1C_ItemType_invalid:
-    return false;
   }
 }
 
@@ -415,7 +411,7 @@ static void A1C_Item_simple(A1C_Item *item, A1C_Simple value) {
   item->simple = value;
 }
 
-A1C_Tag *A1C_Item_tag(A1C_Item *item, uint64_t tag, A1C_Arena *arena) {
+A1C_Item *A1C_Item_tag(A1C_Item *item, uint64_t tag, A1C_Arena *arena) {
   A1C_Item *child = A1C_Arena_calloc(arena, 1, sizeof(A1C_Item));
   if (child == NULL) {
     return NULL;
@@ -426,7 +422,7 @@ A1C_Tag *A1C_Item_tag(A1C_Item *item, uint64_t tag, A1C_Arena *arena) {
   item->tag.tag = tag;
   item->tag.item = child;
 
-  return &item->tag;
+  return item->tag.item;
 }
 
 uint8_t *A1C_Item_bytes(A1C_Item *item, size_t size, A1C_Arena *arena) {
@@ -590,14 +586,23 @@ bool A1C_ItemHeader_isLegal(A1C_ItemHeader header) {
 // Decoder
 ////////////////////////////////////////
 
-void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena, size_t limitBytes,
-                      bool referenceSource) {
+void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena,
+                      A1C_DecoderConfig config) {
   memset(decoder, 0, sizeof(A1C_Decoder));
   assert(arena.calloc != NULL);
-  decoder->limitedArena = A1C_LimitedArena_init(arena, limitBytes);
+  decoder->limitedArena = A1C_LimitedArena_init(arena, config.limitBytes);
   decoder->arena = A1C_LimitedArena_arena(&decoder->limitedArena);
-  decoder->referenceSource = referenceSource;
-  decoder->rejectUnknownSimple = false;
+  if (config.maxDepth == 0) {
+    decoder->maxDepth = A1C_MAX_DEPTH_DEFAULT;
+  } else {
+    decoder->maxDepth = config.maxDepth;
+  }
+  decoder->referenceSource = config.referenceSource;
+  decoder->rejectUnknownSimple = config.rejectUnknownSimple;
+}
+
+A1C_Error A1C_Decoder_getError(const A1C_Decoder *decoder) {
+  return decoder->error;
 }
 
 static void A1C_Decoder_reset(A1C_Decoder *decoder, const uint8_t *start,
@@ -608,9 +613,6 @@ static void A1C_Decoder_reset(A1C_Decoder *decoder, const uint8_t *start,
   decoder->end = start + size;
   decoder->parent = NULL;
   decoder->depth = 0;
-  if (decoder->maxDepth == 0) {
-    decoder->maxDepth = A1C_MAX_DEPTH_DEFAULT;
-  }
   A1C_LimitedArena_reset(&decoder->limitedArena);
 }
 
@@ -964,12 +966,12 @@ static bool A1C_NODISCARD A1C_Decoder_decodeTag(A1C_Decoder *decoder,
                                                 A1C_Item *item) {
   uint64_t value;
   A1C_RET_IF_ERR(A1C_Decoder_readCount(decoder, header, &value));
-  A1C_Tag *tag = A1C_Item_tag(item, value, &decoder->arena);
-  if (tag == NULL) {
+  A1C_Item *child = A1C_Item_tag(item, value, &decoder->arena);
+  if (child == NULL) {
     return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
   }
-  A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, tag->item));
-  assert(tag->item->parent == item);
+  A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, child));
+  assert(child->parent == item);
 
   return true;
 }
@@ -1108,6 +1110,10 @@ void A1C_Encoder_init(A1C_Encoder *encoder, A1C_Encoder_WriteCallback write,
   memset(encoder, 0, sizeof(*encoder));
   encoder->write = write;
   encoder->opaque = opaque;
+}
+
+A1C_Error A1C_Encoder_getError(const A1C_Encoder *encoder) {
+  return encoder->error;
 }
 
 static void A1C_Encoder_reset(A1C_Encoder *encoder) {
@@ -1339,8 +1345,6 @@ bool A1C_Encoder_encodeOne(A1C_Encoder *encoder, const A1C_Item *item) {
   case A1C_ItemType_simple:
     A1C_RET_IF_ERR(A1C_Encoder_encodeSpecial(encoder, item));
     break;
-  case A1C_ItemType_invalid:
-    return A1C_Encoder_error(encoder, A1C_ErrorType_invalidItemType);
   }
 
   --encoder->depth;
@@ -1577,8 +1581,6 @@ bool A1C_Encoder_jsonOne(A1C_Encoder *encoder, const A1C_Item *item) {
   case A1C_ItemType_simple:
     A1C_RET_IF_ERR(A1C_Encoder_jsonSimple(encoder, item));
     break;
-  case A1C_ItemType_invalid:
-    return A1C_Encoder_error(encoder, A1C_ErrorType_invalidItemType);
   }
 
   return true;
