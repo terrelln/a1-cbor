@@ -1,4 +1,3 @@
-
 #include "./a1cbor.h"
 
 #include <assert.h>
@@ -281,19 +280,6 @@ void A1C_LimitedArena_reset(A1C_LimitedArena *limitedArena) {
 // Item Helpers
 ////////////////////////////////////////
 
-static bool A1C_Item_arrayEq(const A1C_Item *a, size_t aSize, const A1C_Item *b,
-                             size_t bSize) {
-  if (aSize != bSize) {
-    return false;
-  }
-  for (size_t i = 0; i < aSize; i++) {
-    if (!A1C_Item_eq(&a[i], &b[i])) {
-      return false;
-    }
-  }
-  return true;
-}
-
 bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b) {
   if (a->type != b->type) {
     return false;
@@ -328,13 +314,28 @@ bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b) {
     return a->string.size == b->string.size &&
            memcmp(a->string.data, b->string.data, a->string.size) == 0;
   case A1C_ItemType_array:
-    return A1C_Item_arrayEq(a->array.items, a->array.size, b->array.items,
-                            b->array.size);
+    if (a->array.size != b->array.size) {
+      return false;
+    }
+    for (size_t i = 0; i < a->array.size; i++) {
+      if (!A1C_Item_eq(&a->array.items[i], &b->array.items[i])) {
+        return false;
+      }
+    }
+    return true;
   case A1C_ItemType_map:
-    return A1C_Item_arrayEq(a->map.keys, a->map.size, b->map.keys,
-                            b->map.size) &&
-           A1C_Item_arrayEq(a->map.values, a->map.size, b->map.values,
-                            b->map.size);
+    if (a->map.size != b->map.size) {
+      return false;
+    }
+    for (size_t i = 0; i < a->map.size; i++) {
+      if (!A1C_Item_eq(&a->map.items[i].key, &b->map.items[i].key)) {
+        return false;
+      }
+      if (!A1C_Item_eq(&a->map.items[i].value, &b->map.items[i].value)) {
+        return false;
+      }
+    }
+    return true;
   case A1C_ItemType_tag:
     return a->tag.tag == b->tag.tag && A1C_Item_eq(a->tag.item, b->tag.item);
   }
@@ -342,8 +343,8 @@ bool A1C_Item_eq(const A1C_Item *a, const A1C_Item *b) {
 
 const A1C_Item *A1C_Map_get(const A1C_Map *map, const A1C_Item *key) {
   for (size_t i = 0; i < map->size; i++) {
-    if (A1C_Item_eq(&map->keys[i], key)) {
-      return &map->values[i];
+    if (A1C_Item_eq(&map->items[i].key, key)) {
+      return &map->items[i].value;
     }
   }
   return NULL;
@@ -422,7 +423,7 @@ A1C_Item *A1C_Item_tag(A1C_Item *item, uint64_t tag, A1C_Arena *arena) {
   item->tag.tag = tag;
   item->tag.item = child;
 
-  return item->tag.item;
+  return child;
 }
 
 uint8_t *A1C_Item_bytes(A1C_Item *item, size_t size, A1C_Arena *arena) {
@@ -491,26 +492,25 @@ void A1C_Item_string_refCStr(A1C_Item *item, const char *data) {
   A1C_Item_string_ref(item, data, strlen(data));
 }
 
-A1C_Map *A1C_Item_map(A1C_Item *item, size_t size, A1C_Arena *arena) {
-  A1C_Item *items = A1C_Arena_calloc(arena, size, 2 * sizeof(A1C_Item));
+A1C_Pair *A1C_Item_map(A1C_Item *item, size_t size, A1C_Arena *arena) {
+  A1C_Pair *items = A1C_Arena_calloc(arena, size, sizeof(A1C_Pair));
   if (items == NULL) {
     return NULL;
   }
 
   item->type = A1C_ItemType_map;
-  item->map.keys = items;
-  item->map.values = items + size;
+  item->map.items = items;
   item->map.size = size;
 
   for (size_t i = 0; i < size; ++i) {
-    item->map.keys[i].parent = item;
-    item->map.values[i].parent = item;
+    items[i].key.parent = item;
+    items[i].value.parent = item;
   }
 
-  return &item->map;
+  return items;
 }
 
-A1C_Array *A1C_Item_array(A1C_Item *item, size_t size, A1C_Arena *arena) {
+A1C_Item *A1C_Item_array(A1C_Item *item, size_t size, A1C_Arena *arena) {
   A1C_Item *items = A1C_Arena_calloc(arena, size, sizeof(A1C_Item));
   if (items == NULL) {
     return NULL;
@@ -521,10 +521,10 @@ A1C_Array *A1C_Item_array(A1C_Item *item, size_t size, A1C_Arena *arena) {
   item->array.size = size;
 
   for (size_t i = 0; i < size; ++i) {
-    item->array.items[i].parent = item;
+    items[i].parent = item;
   }
 
-  return &item->array;
+  return items;
 }
 
 ////////////////////////////////////////
@@ -777,7 +777,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeData(A1C_Decoder *decoder,
 
   const A1C_MajorType majorType = A1C_ItemHeader_majorType(header);
   size_t totalSize = 0;
-  A1C_Item *previous = NULL;
+  const A1C_Item *previous = NULL;
   for (;;) {
     A1C_ItemHeader childHeader;
     A1C_RET_IF_ERR(
@@ -842,7 +842,7 @@ static bool A1C_NODISCARD A1C_Decoder_decodeArray(A1C_Decoder *decoder,
   A1C_RET_IF_ERR(A1C_Decoder_readSize(decoder, header, &size));
   if (A1C_ItemHeader_isIndefinite(header)) {
     size = 0;
-    A1C_Item *previous = NULL;
+    const A1C_Item *previous = NULL;
     for (;;) {
       A1C_ItemHeader childHeader;
       A1C_RET_IF_ERR(
@@ -859,16 +859,17 @@ static bool A1C_NODISCARD A1C_Decoder_decodeArray(A1C_Decoder *decoder,
       previous = child;
       ++size;
     }
-    A1C_Array *array = A1C_Item_array(item, size, &decoder->arena);
+    A1C_Item *array = A1C_Item_array(item, size, &decoder->arena);
     if (array == NULL) {
       return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
     }
     while (previous != NULL) {
-      A1C_Item *child = previous;
+      const A1C_Item *child = previous;
       previous = previous->parent;
 
-      array->items[--size] = *child;
-      child->parent = item;
+      --size;
+      array[size] = *child;
+      array[size].parent = item;
     }
     assert(size == 0);
   } else {
@@ -877,13 +878,13 @@ static bool A1C_NODISCARD A1C_Decoder_decodeArray(A1C_Decoder *decoder,
       // Check remaining before allocation to avoid huge allocations.
       return A1C_Decoder_error(decoder, A1C_ErrorType_truncated);
     }
-    A1C_Array *array = A1C_Item_array(item, size, &decoder->arena);
+    A1C_Item *array = A1C_Item_array(item, size, &decoder->arena);
     if (array == NULL) {
       return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
     }
     for (size_t i = 0; i < size; i++) {
-      A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, array->items + i));
-      array->items[i].parent = item;
+      A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, array + i));
+      array[i].parent = item;
     }
   }
   return true;
@@ -896,8 +897,8 @@ static bool A1C_NODISCARD A1C_Decoder_decodeMap(A1C_Decoder *decoder,
   A1C_RET_IF_ERR(A1C_Decoder_readSize(decoder, header, &size));
   if (A1C_ItemHeader_isIndefinite(header)) {
     size = 0;
-    A1C_Item *prevKey = NULL;
-    A1C_Item *prevVal = NULL;
+    const A1C_Item *prevKey = NULL;
+    const A1C_Item *prevVal = NULL;
     for (;;) {
       A1C_ItemHeader keyHeader;
       A1C_RET_IF_ERR(A1C_Decoder_peek(decoder, &keyHeader, sizeof(keyHeader)));
@@ -921,23 +922,23 @@ static bool A1C_NODISCARD A1C_Decoder_decodeMap(A1C_Decoder *decoder,
 
       ++size;
     }
-    A1C_Map *map = A1C_Item_map(item, size, &decoder->arena);
+    A1C_Pair *map = A1C_Item_map(item, size, &decoder->arena);
     if (map == NULL) {
       return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
     }
     while (prevKey != NULL) {
-      A1C_Item *key = prevKey;
+      const A1C_Item *key = prevKey;
       prevKey = prevKey->parent;
 
       assert(prevVal != NULL);
-      A1C_Item *value = prevVal;
+      const A1C_Item *value = prevVal;
       prevVal = prevVal->parent;
 
       --size;
-      map->keys[size] = *key;
-      key->parent = item;
-      map->values[size] = *value;
-      value->parent = item;
+      map[size].key = *key;
+      map[size].key.parent = item;
+      map[size].value = *value;
+      map[size].value.parent = item;
     }
     assert(size == 0);
   } else {
@@ -946,16 +947,16 @@ static bool A1C_NODISCARD A1C_Decoder_decodeMap(A1C_Decoder *decoder,
       // Check remaining before allocation to avoid huge allocations.
       return A1C_Decoder_error(decoder, A1C_ErrorType_truncated);
     }
-    A1C_Map *map = A1C_Item_map(item, size, &decoder->arena);
+    A1C_Pair *map = A1C_Item_map(item, size, &decoder->arena);
     if (map == NULL) {
       return A1C_Decoder_error(decoder, A1C_ErrorType_badAlloc);
     }
     for (size_t i = 0; i < size; i++) {
-      A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, map->keys + i));
-      map->keys[i].parent = item;
+      A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, &map[i].key));
+      map[i].key.parent = item;
 
-      A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, map->values + i));
-      map->values[i].parent = item;
+      A1C_RET_IF_ERR(A1C_Decoder_decodeOneInto(decoder, &map[i].value));
+      map[i].value.parent = item;
     }
   }
   return true;
@@ -1085,8 +1086,8 @@ static bool A1C_NODISCARD A1C_Decoder_decodeOneInto(A1C_Decoder *decoder,
   return true;
 }
 
-A1C_Item *A1C_Decoder_decode(A1C_Decoder *decoder, const uint8_t *data,
-                             size_t size) {
+const A1C_Item *A1C_Decoder_decode(A1C_Decoder *decoder, const uint8_t *data,
+                                   size_t size) {
   A1C_Decoder_reset(decoder, data, size);
   if (data == NULL) {
     decoder->error.type = A1C_ErrorType_truncated;
@@ -1250,12 +1251,11 @@ static bool A1C_NODISCARD A1C_Encoder_encodeMap(A1C_Encoder *encoder,
     return false;
   }
   for (size_t i = 0; i < count; i++) {
-    const A1C_Item *key = &item->map.keys[i];
-    const A1C_Item *value = &item->map.values[i];
-    if (!A1C_Encoder_encodeOne(encoder, key)) {
+    const A1C_Pair pair = item->map.items[i];
+    if (!A1C_Encoder_encodeOne(encoder, &pair.key)) {
       return false;
     }
-    if (!A1C_Encoder_encodeOne(encoder, value)) {
+    if (!A1C_Encoder_encodeOne(encoder, &pair.value)) {
       return false;
     }
   }
@@ -1474,9 +1474,9 @@ static bool A1C_NODISCARD A1C_Encoder_jsonMap(A1C_Encoder *encoder,
     }
     A1C_RET_IF_ERR(A1C_Encoder_putc(encoder, '\n'));
     A1C_RET_IF_ERR(A1C_Encoder_jsonIndent(encoder));
-    A1C_RET_IF_ERR(A1C_Encoder_jsonOne(encoder, &item->map.keys[i]));
+    A1C_RET_IF_ERR(A1C_Encoder_jsonOne(encoder, &item->map.items[i].key));
     A1C_RET_IF_ERR(A1C_Encoder_writeCStr(encoder, ": "));
-    A1C_RET_IF_ERR(A1C_Encoder_jsonOne(encoder, &item->map.values[i]));
+    A1C_RET_IF_ERR(A1C_Encoder_jsonOne(encoder, &item->map.items[i].value));
   }
   --encoder->depth;
 
@@ -1488,53 +1488,50 @@ static bool A1C_NODISCARD A1C_Encoder_jsonMap(A1C_Encoder *encoder,
 
 static bool A1C_NODISCARD A1C_Encoder_jsonTag(A1C_Encoder *encoder,
                                               const A1C_Item *item) {
-  A1C_Item children[6];
+  A1C_Pair items[3];
   A1C_Item map;
   map.type = A1C_ItemType_map;
-  map.map.keys = children + 0;
-  map.map.values = children + 3;
+  map.map.items = items;
   map.map.size = 3;
 
-  A1C_Item_string_refCStr(map.map.keys + 0, "type");
-  A1C_Item_string_refCStr(map.map.values + 0, "tag");
-  A1C_Item_string_refCStr(map.map.keys + 1, "tag");
-  A1C_Item_int64(map.map.values + 1, (int64_t)item->tag.tag);
-  A1C_Item_string_refCStr(map.map.keys + 2, "value");
-  map.map.values[2] = *item->tag.item;
+  A1C_Item_string_refCStr(&items[0].key, "type");
+  A1C_Item_string_refCStr(&items[0].value, "tag");
+  A1C_Item_string_refCStr(&items[1].key, "tag");
+  A1C_Item_int64(&items[1].value, (int64_t)item->tag.tag);
+  A1C_Item_string_refCStr(&items[2].key, "value");
+  items[2].value = *item->tag.item;
 
   return A1C_Encoder_jsonMap(encoder, &map);
 }
 
 static bool A1C_NODISCARD A1C_Encoder_jsonSimple(A1C_Encoder *encoder,
                                                  const A1C_Item *item) {
-  A1C_Item children[4];
+  A1C_Pair items[2];
   A1C_Item map;
   map.type = A1C_ItemType_map;
-  map.map.keys = children + 0;
-  map.map.values = children + 2;
+  map.map.items = items;
   map.map.size = 2;
 
-  A1C_Item_string_refCStr(map.map.keys + 0, "type");
-  A1C_Item_string_refCStr(map.map.values + 0, "simple");
-  A1C_Item_string_refCStr(map.map.keys + 1, "value");
-  A1C_Item_int64(map.map.values + 1, item->simple);
+  A1C_Item_string_refCStr(&items[0].key, "type");
+  A1C_Item_string_refCStr(&items[0].value, "simple");
+  A1C_Item_string_refCStr(&items[1].key, "value");
+  A1C_Item_int64(&items[1].value, item->simple);
 
   return A1C_Encoder_jsonMap(encoder, &map);
 }
 
 static bool A1C_NODISCARD A1C_Encoder_jsonHalf(A1C_Encoder *encoder,
                                                const A1C_Item *item) {
-  A1C_Item children[4];
+  A1C_Pair items[2];
   A1C_Item map;
   map.type = A1C_ItemType_map;
-  map.map.keys = children + 0;
-  map.map.values = children + 2;
+  map.map.items = items;
   map.map.size = 2;
 
-  A1C_Item_string_refCStr(map.map.keys + 0, "type");
-  A1C_Item_string_refCStr(map.map.values + 0, "half");
-  A1C_Item_string_refCStr(map.map.keys + 1, "uint16");
-  A1C_Item_int64(map.map.values + 1, item->float16);
+  A1C_Item_string_refCStr(&items[0].key, "type");
+  A1C_Item_string_refCStr(&items[0].value, "half");
+  A1C_Item_string_refCStr(&items[1].key, "uint16");
+  A1C_Item_int64(&items[1].value, item->float16);
 
   return A1C_Encoder_jsonMap(encoder, &map);
 }

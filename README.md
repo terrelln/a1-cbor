@@ -10,10 +10,11 @@ The full CBOR spec is supported with the following exceptions:
 ## Features
 
 1. Arena based allocation means that freeing memory is drastically simplified.
-2. Strong memory limits in the decoder. By default it won't allocate more than `sizeof(A1C_Item) * encoded_size`, and tighter memory limits can be applied.
-3. JSON pretty printing (UTF-8 strings not supported).
-4. 100% thread-safe.
-5. Fuzz tested for:
+2. Immutable item API for simplicity & safe references.
+3. Strong memory limits in the decoder. By default it won't allocate more than `sizeof(A1C_Item) * encoded_size`, and tighter memory limits can be applied.
+4. JSON pretty printing (UTF-8 strings not supported).
+5. 100% thread-safe.
+6. Fuzz tested for:
     a. Decoding safety on untrusted input
     b. Differential fuzzing to ensure we accept and reject exactly the same set of inputs as [`libcbor`](https://github.com/PJK/libcbor) (with the exception of integers that don't fit in an `int64_t`).
     c. Round trip fuzzing

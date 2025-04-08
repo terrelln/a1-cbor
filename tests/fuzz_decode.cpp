@@ -213,8 +213,8 @@ bool equal(const A1C_Item *a, const cbor_item_t *b) {
       return false;
     }
     for (size_t i = 0; i < a->map.size; ++i) {
-      const A1C_Item *keyA = &a->map.keys[i];
-      const A1C_Item *valueA = &a->map.values[i];
+      const A1C_Item *keyA = &a->map.items[i].key;
+      const A1C_Item *valueA = &a->map.items[i].value;
       auto childB = cbor_map_handle(b)[i];
       if (childB.key == NULL || !equal(keyA, childB.key)) {
         return false;

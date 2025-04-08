@@ -115,38 +115,6 @@ bool approxEq(const nlohmann::json &a, const nlohmann::json &b) {
   }
   return false;
 }
-
-// Sanitize floating point values, because they will differ
-void sanitize(A1C_Item *item) {
-  switch (item->type) {
-  case A1C_ItemType_int64:
-  case A1C_ItemType_float16:
-  case A1C_ItemType_boolean:
-  case A1C_ItemType_null:
-  case A1C_ItemType_undefined:
-  case A1C_ItemType_simple:
-  case A1C_ItemType_bytes:
-  case A1C_ItemType_string:
-  case A1C_ItemType_tag:
-  case A1C_ItemType_float32:
-    item->float32 = int64_t(item->float32);
-    return;
-  case A1C_ItemType_float64:
-    item->float64 = int64_t(item->float64);
-    return;
-  case A1C_ItemType_array:
-    for (size_t i = 0; i < item->array.size; ++i) {
-      sanitize(&item->array.items[i]);
-    }
-    return;
-  case A1C_ItemType_map:
-    for (size_t i = 0; i < item->map.size; ++i) {
-      sanitize(&item->map.keys[i]);
-      sanitize(&item->map.values[i]);
-    }
-    return;
-  }
-}
 } // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {

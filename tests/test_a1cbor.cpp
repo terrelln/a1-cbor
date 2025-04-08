@@ -89,12 +89,12 @@ protected:
     return str;
   }
 
-  A1C_Item *decode(const std::string &data, size_t limit = 0,
+  const A1C_Item *decode(const std::string &data, size_t limit = 0,
                    bool referenceSource = false) {
     A1C_Decoder decoder;
     A1C_Decoder_init(&decoder, arena,
                      {.limitBytes = limit, .referenceSource = referenceSource});
-    A1C_Item *item = A1C_Decoder_decode(
+    const A1C_Item *item = A1C_Decoder_decode(
         &decoder, reinterpret_cast<const uint8_t *>(data.data()), data.size());
     if (item == nullptr) {
       throw std::runtime_error{printError("Decoding failed", decoder.error)};
@@ -102,12 +102,12 @@ protected:
     return item;
   }
 
-  A1C_Item *decode(const std::vector<uint8_t> &data, size_t limit = 0,
+  const A1C_Item *decode(const std::vector<uint8_t> &data, size_t limit = 0,
                    bool referenceSource = false) {
     A1C_Decoder decoder;
     A1C_Decoder_init(&decoder, arena,
                      {.limitBytes = limit, .referenceSource = referenceSource});
-    A1C_Item *item = A1C_Decoder_decode(&decoder, data.data(), data.size());
+    const A1C_Item *item = A1C_Decoder_decode(&decoder, data.data(), data.size());
     if (item == nullptr) {
       throw std::runtime_error{printError("Decoding failed", decoder.error)};
     }
@@ -490,12 +490,12 @@ TEST_F(A1CBorTest, Map) {
     const A1C_Map &m = map->map;
 
     for (size_t i = 0; i < m.size; ++i) {
-      auto item = A1C_Map_get(&m, &m.keys[i]);
+      auto item = A1C_Map_get(&m, &m.items[i].key);
       ASSERT_NE(item, nullptr);
-      ASSERT_EQ(item, &m.values[i]);
+      ASSERT_EQ(item, &m.items[i].value);
 
-      ASSERT_EQ(m.keys[i].parent, map);
-      ASSERT_EQ(m.values[i].parent, map);
+      ASSERT_EQ(m.items[i].key.parent, map);
+      ASSERT_EQ(m.items[i].value.parent, map);
     }
 
     auto encoded = encode(map);
@@ -504,8 +504,8 @@ TEST_F(A1CBorTest, Map) {
     ASSERT_EQ(decoded->parent, nullptr);
 
     for (size_t i = 0; i < m.size; ++i) {
-      ASSERT_EQ(decoded->map.keys[i].parent, decoded);
-      ASSERT_EQ(decoded->map.values[i].parent, decoded);
+      ASSERT_EQ(decoded->map.items[i].key.parent, decoded);
+      ASSERT_EQ(decoded->map.items[i].value.parent, decoded);
     }
   };
 
@@ -521,13 +521,13 @@ TEST_F(A1CBorTest, Map) {
     auto map = A1C_Item_root(&arena);
     auto m = A1C_Item_map(map, 1, &arena);
     ASSERT_NE(map, nullptr);
-    A1C_Item_int64(m->keys + 0, 42);
-    A1C_Item_int64(m->values + 0, 42);
+    A1C_Item_int64(&m[0].key, 42);
+    A1C_Item_int64(&m[0].value, 42);
     testMap(map);
-    EXPECT_NE(A1C_Map_get_int(m, 42), nullptr);
-    EXPECT_EQ(A1C_Map_get_cstr(m, "key1"), nullptr);
-    EXPECT_EQ(A1C_Map_get_int(m, 0), nullptr);
-    EXPECT_EQ(A1C_Map_get_int(m, -5), nullptr);
+    EXPECT_NE(A1C_Map_get_int(&map->map, 42), nullptr);
+    EXPECT_EQ(A1C_Map_get_cstr(&map->map, "key1"), nullptr);
+    EXPECT_EQ(A1C_Map_get_int(&map->map, 0), nullptr);
+    EXPECT_EQ(A1C_Map_get_int(&map->map, -5), nullptr);
     map1 = map;
   }
   A1C_Item *map2;
@@ -535,15 +535,15 @@ TEST_F(A1CBorTest, Map) {
     auto map = A1C_Item_root(&arena);
     auto m = A1C_Item_map(map, 2, &arena);
     ASSERT_NE(map, nullptr);
-    A1C_Item_string_refCStr(m->keys + 0, "key1");
-    A1C_Item_string_refCStr(m->values + 0, "value1");
-    A1C_Item_string_refCStr(m->keys + 1, "key2");
-    A1C_Item_string_refCStr(m->values + 1, "value2");
+    A1C_Item_string_refCStr(&m[0].key, "key1");
+    A1C_Item_string_refCStr(&m[0].value, "value1");
+    A1C_Item_string_refCStr(&m[1].key, "key2");
+    A1C_Item_string_refCStr(&m[1].value, "value2");
     testMap(map);
-    auto item = A1C_Map_get_cstr(m, "key1");
+    auto item = A1C_Map_get_cstr(&map->map, "key1");
     ASSERT_NE(item, nullptr);
-    A1C_Map_get_cstr(m, "key1");
-    EXPECT_EQ(A1C_Map_get_int(m, 42), nullptr);
+    A1C_Map_get_cstr(&map->map, "key1");
+    EXPECT_EQ(A1C_Map_get_int(&map->map, 42), nullptr);
     map2 = map;
   }
   ASSERT_NE(*map1, *map2);
@@ -551,14 +551,14 @@ TEST_F(A1CBorTest, Map) {
     auto map = A1C_Item_root(&arena);
     auto m = A1C_Item_map(map, 4, &arena);
     ASSERT_NE(map, nullptr);
-    A1C_Item_null(m->keys + 0);
-    A1C_Item_null(m->values + 0);
-    A1C_Item_boolean(m->keys + 1, true);
-    A1C_Item_boolean(m->values + 1, true);
-    A1C_Item_boolean(m->keys + 2, false);
-    A1C_Item_boolean(m->values + 2, false);
-    A1C_Item_undefined(m->keys + 3);
-    A1C_Item_undefined(m->values + 3);
+    A1C_Item_null(&m[0].key);
+    A1C_Item_null(&m[0].value);
+    A1C_Item_boolean(&m[1].key, true);
+    A1C_Item_boolean(&m[1].value, true);
+    A1C_Item_boolean(&m[2].key, false);
+    A1C_Item_boolean(&m[2].value, false);
+    A1C_Item_undefined(&m[3].key);
+    A1C_Item_undefined(&m[3].value);
     testMap(map);
   }
 }
@@ -603,10 +603,10 @@ TEST_F(A1CBorTest, Array) {
     ASSERT_NE(a, nullptr);
 
     // Fill the array with a single int64 value
-    A1C_Item_int64(a->items + 0, 42);
+    A1C_Item_int64(a + 0, 42);
     testArray(array);
 
-    EXPECT_EQ(A1C_Array_get(a, 1), nullptr); // out of bounds
+    EXPECT_EQ(A1C_Array_get(&array->array, 1), nullptr); // out of bounds
     array1 = array;
   }
   A1C_Item *array2;
@@ -616,14 +616,14 @@ TEST_F(A1CBorTest, Array) {
     auto a = A1C_Item_array(array, 5, &arena);
     ASSERT_NE(a, nullptr);
 
-    A1C_Item_null(a->items + 0);
-    A1C_Item_boolean(a->items + 1, true);
-    A1C_Item_undefined(a->items + 2);
-    A1C_Item_int64(a->items + 3, 100);
-    auto m = A1C_Item_map(a->items + 4, 1, &arena);
+    A1C_Item_null(a + 0);
+    A1C_Item_boolean(a + 1, true);
+    A1C_Item_undefined(a + 2);
+    A1C_Item_int64(a + 3, 100);
+    auto m = A1C_Item_map(a + 4, 1, &arena);
     ASSERT_NE(m, nullptr);
-    A1C_Item_null(m->keys + 0);
-    A1C_Item_null(m->values + 0);
+    A1C_Item_null(&m[0].key);
+    A1C_Item_null(&m[0].value);
 
     testArray(array);
     array2 = array;
@@ -639,7 +639,7 @@ TEST_F(A1CBorTest, LargeArray) {
   ASSERT_NE(a, nullptr);
 
   for (size_t i = 0; i < size; ++i) {
-    A1C_Item_int64(a->items + i, i);
+    A1C_Item_int64(a + i, i);
   }
 
   auto encoded = encode(array);
@@ -728,35 +728,35 @@ TEST_F(A1CBorTest, Json) {
   ASSERT_NE(item, nullptr);
   auto map = A1C_Item_map(item, 2, &arena);
   ASSERT_NE(map, nullptr);
-  A1C_Item_string_refCStr(map->keys + 0, "key");
-  A1C_Item_string_refCStr(map->values + 0, "value");
-  A1C_Item_int64(map->keys + 1, 42);
-  auto array = A1C_Item_array(map->values + 1, 14, &arena);
+  A1C_Item_string_refCStr(&map[0].key, "key");
+  A1C_Item_string_refCStr(&map[0].value, "value");
+  A1C_Item_int64(&map[1].key, 42);
+  auto array = A1C_Item_array(&map[1].value, 14, &arena);
   ASSERT_NE(array, nullptr);
-  A1C_Item_int64(array->items + 0, -1);
-  A1C_Item_float32(array->items + 1, -3.14);
-  A1C_Item_float64(array->items + 2, 3.14);
-  A1C_Item_boolean(array->items + 3, true);
-  A1C_Item_boolean(array->items + 4, false);
-  A1C_Item_null(array->items + 5);
-  A1C_Item_undefined(array->items + 6);
+  A1C_Item_int64(array + 0, -1);
+  A1C_Item_float32(array + 1, -3.14);
+  A1C_Item_float64(array + 2, 3.14);
+  A1C_Item_boolean(array + 3, true);
+  A1C_Item_boolean(array + 4, false);
+  A1C_Item_null(array + 5);
+  A1C_Item_undefined(array + 6);
   uint8_t shortData[] = "hello world1";
-  A1C_Item_bytes_ref(array->items + 7, shortData, sizeof(shortData));
-  A1C_Item_string_refCStr(array->items + 8, "this is a longer string");
-  ASSERT_NE(A1C_Item_array(array->items + 9, 0, &arena), nullptr);
-  ASSERT_NE(A1C_Item_map(array->items + 10, 0, &arena), nullptr);
-  auto tag = A1C_Item_tag(array->items + 11, 100, &arena);
+  A1C_Item_bytes_ref(array + 7, shortData, sizeof(shortData));
+  A1C_Item_string_refCStr(array + 8, "this is a longer string");
+  ASSERT_NE(A1C_Item_array(array + 9, 0, &arena), nullptr);
+  ASSERT_NE(A1C_Item_map(array + 10, 0, &arena), nullptr);
+  auto tag = A1C_Item_tag(array + 11, 100, &arena);
   ASSERT_NE(tag, nullptr);
   A1C_Item_boolean(tag, true);
-  array->items[12].type = A1C_ItemType_simple;
-  array->items[12].simple = 42;
-  array = A1C_Item_array(array->items + 13, 5, &arena);
+  array[12].type = A1C_ItemType_simple;
+  array[12].simple = 42;
+  array = A1C_Item_array(array + 13, 5, &arena);
   ASSERT_NE(array, nullptr);
-  A1C_Item_bytes_ref(array->items + 0, shortData, 0);
-  A1C_Item_bytes_ref(array->items + 1, shortData, 1);
-  A1C_Item_bytes_ref(array->items + 2, shortData, 2);
-  A1C_Item_bytes_ref(array->items + 3, shortData, 3);
-  A1C_Item_bytes_ref(array->items + 4, shortData, 4);
+  A1C_Item_bytes_ref(array + 0, shortData, 0);
+  A1C_Item_bytes_ref(array + 1, shortData, 1);
+  A1C_Item_bytes_ref(array + 2, shortData, 2);
+  A1C_Item_bytes_ref(array + 3, shortData, 3);
+  A1C_Item_bytes_ref(array + 4, shortData, 4);
 
   auto encoded = encodeJson(item);
   EXPECT_EQ(encoded, kExpectedJSON) << encoded;

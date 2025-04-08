@@ -68,19 +68,18 @@ typedef struct {
 } A1C_String;
 
 typedef struct {
-  struct A1C_Item *keys;
-  struct A1C_Item *values;
+  const struct A1C_Pair *items;
   size_t size;
 } A1C_Map;
 
 typedef struct {
-  struct A1C_Item *items;
+  const struct A1C_Item *items;
   size_t size;
 } A1C_Array;
 
 typedef struct {
   uint64_t tag;
-  struct A1C_Item *item;
+  const struct A1C_Item *item;
 } A1C_Tag;
 
 typedef uint8_t A1C_Simple;
@@ -110,8 +109,13 @@ typedef struct A1C_Item {
     A1C_Simple simple;
     A1C_Tag tag;
   };
-  struct A1C_Item *parent;
+  const struct A1C_Item *parent;
 } A1C_Item;
+
+typedef struct A1C_Pair {
+  A1C_Item key;
+  A1C_Item value;
+} A1C_Pair;
 
 ////////////////////////////////////////
 // Errors
@@ -258,8 +262,9 @@ void A1C_Decoder_init(A1C_Decoder *decoder, A1C_Arena arena,
  * @returns The decoded item on success, or NULL on failure. Upon failure,
  * A1C_Decoder_getError() can be used to retrieve the error information.
  */
-A1C_Item *A1C_NODISCARD A1C_Decoder_decode(A1C_Decoder *decoder,
-                                           const uint8_t *data, size_t size);
+const A1C_Item *A1C_NODISCARD A1C_Decoder_decode(A1C_Decoder *decoder,
+                                                 const uint8_t *data,
+                                                 size_t size);
 
 /**
  * @returns The error information from the last decode operation.
@@ -390,19 +395,19 @@ void A1C_Item_string_refCStr(A1C_Item *item, const char *data);
  * Creates a map in the given @p item of size @p size, allocating the keys and
  * values in the provided @p arena.
  *
- * @returns The map member, or NULL on allocation failure.
+ * @returns The map items, or NULL on allocation failure.
  */
-A1C_Map *A1C_NODISCARD A1C_Item_map(A1C_Item *item, size_t size,
-                                    A1C_Arena *arena);
+A1C_Pair *A1C_NODISCARD A1C_Item_map(A1C_Item *item, size_t size,
+                                     A1C_Arena *arena);
 
 /**
  * Creates an array in the given @p item of size @p size, allocating the items
  * in the provided @p arena.
  *
- * @returns The array member, or NULL on allocation failure.
+ * @returns The array items, or NULL on allocation failure.
  */
-A1C_Array *A1C_NODISCARD A1C_Item_array(A1C_Item *item, size_t size,
-                                        A1C_Arena *arena);
+A1C_Item *A1C_NODISCARD A1C_Item_array(A1C_Item *item, size_t size,
+                                       A1C_Arena *arena);
 
 ////////////////////////////////////////
 // Encoder
